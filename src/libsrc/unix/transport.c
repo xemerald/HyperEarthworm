@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <time.h>
 
@@ -40,6 +41,7 @@
 # include <thread.h>
 #endif
 
+#include <earthworm.h>
 #include "platform.h"
 #include "transport.h"
 
@@ -47,541 +49,274 @@ static short Put_Init=1;           /* initialization flag */
 static short Get_Init=1;           /* initialization flag */
 static short Copyfrom_Init=1;      /* initialization flag */
 static short Flag_Init=1;          /* initialization flag */
+/* */
 static SHM_INFO smf_region;
 static long shm_flag_key;
+/* */
+#define SHM_DEFAULT_MASK     0664
+/* */
 #define SHM_FLAG_DEFAULT_KEY 9999
 #define SHM_FLAG_RING "FLAG_RING"
-
+/* */
 #define FF_REMOVE 1
 #define FF_FLAG2ADD 2
 #define FF_FLAG2DIE 3
 #define FF_GETFLAG 4
 #define FF_CLASSIFY 5
-
+/* */
 #define FLAG_LOCK_TRIES 3
 #define RING_LOCK_TRIES 3
 
-/* These functions are for internal use by transport functions only
-   ****************************************************************/
-void  tport_syserr  ( char *, long );
-void  tport_buferror( short, char * );
-static int tport_doFlagOp( SHM_INFO* region, int pid, int op );
-
-/* These statements and variables are required by the functions of
-   the input-buffering thread
-   ***************************************************************/
-#include <earthworm.h>
-volatile SHM_INFO *PubRegion;      /* transport public ring      */
-volatile SHM_INFO *BufRegion;      /* pointer to private ring    */
-volatile MSG_LOGO *Getlogo;        /* array of logos to copy     */
-volatile short     Nget;           /* number of logos in getlogo */
-volatile unsigned  MaxMsgSize;     /* size of message buffer     */
-volatile char     *Message;        /* message buffer             */
-static unsigned char MyModuleId;   /* module id of main thread   */
-unsigned char      MyInstid;       /* inst id of main thread     */
-unsigned char      TypeError;      /* type for error messages    */
-
+/* These functions are for internal use by transport functions only */
+static SHM_HEAD *create_shm_region( int *, const long, const long );
+static void close_shm_region( SHM_INFO * );
+static void destroy_semaphore( SHM_INFO * );
+static SHM_HEAD *attach_shm_region( int *, const long );
+static void detach_shm_region( SHM_INFO * );
 #ifdef _USE_POSIX_SHM
-/* Compatibility fuctions to establish conversion between IPC-style keys (used
-	by most earthworm setup files) to POSIX shared memory path identifiers.
-	We need this kludge until everyone is ready to convert their setup files
-	to use a POSIX path instead of an IPC key.  (Each  module would also
-	need to parse the POSIX path instead of an IPC key, and the SHM_INFO struct
-	would need to have POSIX path and file descriptor members instead of IPC
-	key and ID members.)  Since the goal for now is a fairly transparent migration
-	to POSIX, we'll keep the IPC-style keys and make an equivalent path from the key.
-	For those POSIX machines that actually implement POSIX shared memory paths in
-	the filesystem (e.g., IRIX), make sure the BASE macros below refer to an
-	appropriate place, or modify as needed. */
-#define BASE_SHM "/tmp/ew_shm_"
-#define BASE_SEM "/tmp/ew_sem_"
-#define BASE_SHM_FLAG "/tmp/ew_shmFlag_"
-#define BASE_SEM_FLAG "/tmp/ew_semFlag_"
-static char *key_2_path(long memkey, int is_shm)
-{
-	static char path[256];
-	if ( memkey == shm_flag_key ) {
-		sprintf(path,"%s%d", is_shm ? BASE_SHM_FLAG : BASE_SEM_FLAG, memkey);
-		return(path);
-	} else {
-		sprintf(path,"%s%d", is_shm ? BASE_SHM : BASE_SEM, memkey);
-		return(path);
-	}
-}
-static int path_2_key(const char *path, int is_shm)
-{
-	return(atoi(path+strlen(is_shm ? BASE_SHM : BASE_SEM)));
-}
-#endif
-
-/******************** function tport_create *************************/
-/*         Create a shared memory region & its semaphore,           */
-/*           attach to it and initialize header values.             */
-/********************************************************************/
-
-void tport_create( SHM_INFO *region,   /* info structure for memory region  */
-		   long      nbytes,   /* size of shared memory region      */
-		   long      memkey )  /* key to shared memory region       */
-{
-   SHM_HEAD       *shm;       /* pointer to start of memory region */
-
-#ifdef _USE_POSIX_SHM
-   int             regid;     /* shared memory file descriptor   */
-   void	           *shmbuf;   /* shared memory pointer           */
-   sem_t           *semid;    /* semaphore identifier            */
-   int mode, omask, prot, flags;
-
-/**** Destroy memory region if it already exists ****/
-   if ( (regid = shm_open( key_2_path(memkey,1), O_RDONLY, 0)) != -1 ) {
-      if ( close( regid ) == -1 )
-         tport_syserr( "tport_create close", memkey );
-      if ( shm_unlink(key_2_path(memkey,1)) == -1 )
-         tport_syserr( "tport_create shm_unlink", memkey );
-   }
-
-/**** Temporarily clear any existing file creation mask */
-   mode = 0664;
-   omask = umask(0);
-
-/**** Connect and map shared memory region */
-   flags = O_CREAT | O_RDWR | O_EXCL;
-   if ( (regid = shm_open( key_2_path(memkey,1), flags, mode )) == -1 )
-      tport_syserr( "tport_create shm_open", memkey );
-
-   prot = PROT_READ | PROT_WRITE;
-   flags = MAP_SHARED | MAP_AUTOGROW;
-   if ( (shmbuf = mmap(0, nbytes, prot, flags, regid, 0)) == MAP_FAILED )
-      tport_syserr( "tport_create mmap", memkey );
-
-   shm = (SHM_HEAD *)shmbuf;
-
+static sem_t create_semaphore( const long );
+static sem_t get_semaphore( const long );
 #else
-   int             regid;     /* shared memory region identifier   */
-   int             semid;     /* semaphore identifier              */
-   struct shmid_ds shmbuf;    /* shared memory data structure      */
-   int             res;
-/**** Destroy memory region if it already exists ****/
-
-   if ( (regid = shmget( memkey, nbytes, 0 )) != -1 ) {
-      res = shmctl( regid, IPC_RMID, &shmbuf );
-      if ( res == -1 )
-         tport_syserr( "tport_create shmctl", memkey );
-   }
-
-/**** Create shared memory region ****/
-
-   regid = shmget( memkey, nbytes, IPC_CREAT | 0666 );
-   if ( regid == -1 )
-      tport_syserr( "tport_create shmget", memkey );
-
-/**** Attach to shared memory region ****/
-
-   shm = (SHM_HEAD *) shmat( regid, 0, SHM_RND );
-   if ( shm == (SHM_HEAD *) -1 )
-      tport_syserr( "tport_create shmat", memkey );
+static int   create_semaphore( const long );
+static int   get_semaphore( const long );
 #endif
 
-/**** Initialize shared memory region header ****/
+static void tport_syserr( const char *, const long );
+static void tport_buferror( short, char * );
+static int  tport_doFlagOp( SHM_INFO* region, int pid, int op );
+
+/*
+ * These statements and variables are required by the functions of
+ * the input-buffering thread
+ */
+static volatile SHM_INFO *PubRegion;      /* transport public ring      */
+static volatile SHM_INFO *BufRegion;      /* pointer to private ring    */
+static volatile MSG_LOGO *Getlogo;        /* array of logos to copy     */
+static volatile int16_t   Nget;           /* number of logos in getlogo */
+static volatile uint32_t  MaxMsgSize;     /* size of message buffer     */
+static volatile char     *Message;        /* message buffer             */
+static uint8_t            MyModuleId;     /* module id of main thread   */
+static uint8_t            MyInstid;       /* inst id of main thread     */
+static uint8_t            TypeError;      /* type for error messages    */
+
+/*
+ * tport_create() - Create a shared memory region & its semaphore,
+ *                  attach to it and initialize header values.
+ * Arguments:
+ *   info structure for memory region
+ *   size of shared memory region
+ *   key to shared memory region
+ */
+void tport_create( SHM_INFO *region, long nbytes, long memkey )
+{
+	int       regid = 0;                                            /* shared memory region identifier   */
+	SHM_HEAD *shm   = create_shm_region( &regid, nbytes, memkey );  /* pointer to start of memory region */
+
+/* Initialize shared memory region header */
    shm->nbytes = nbytes;
    shm->keymax = nbytes - sizeof(SHM_HEAD);
-   shm->keyin  = 0;                           /* cosmetic change 980428:ldd */
+   shm->keyin  = 0;   /* cosmetic change 980428:ldd */
    shm->keyold = shm->keyin;
    shm->flag   = 0;
-
-#ifdef _USE_POSIX_SHM
-/**** Destroy semaphore if it already exists ****/
-   if ( (semid = sem_open(key_2_path(memkey,0), 0)) != (sem_t *)-1 ) {
-      if ( sem_close(semid) == -1 )
-         tport_syserr( "tport_create sem_close", memkey );
-      if ( sem_unlink(key_2_path(memkey,0)) == -1 )
-         tport_syserr( "tport_create sem_unlink", memkey );
-   }
-
-/**** Make semaphore for this shared memory region & set semval = SHM_FREE ****/
-   if ( (semid = sem_open(key_2_path(memkey,0), O_CREAT, mode, SHM_FREE)) == (sem_t *)-1 )
-      tport_syserr( "tport_create semget", memkey );
-
-/**** Restore any existing file creation mask */
-   if ( omask )
-   	umask(omask);
-#else
-/**** Make semaphore for this shared memory region & set semval = SHM_FREE ****/
-
-   semid = semget( memkey, 1, IPC_CREAT | 0666 );
-   if ( semid == -1 )
-      tport_syserr( "tport_create semget", memkey );
-
-   /*
-   semarg->val = SHM_FREE;
-   res = semctl( semid, 0, SETVAL, semarg );
-   */
-   res = semctl( semid, 0, SETVAL, SHM_FREE );
-   if ( res == -1 )
-      tport_syserr( "tport_create semctl", memkey );
-#endif
-
-/**** set values in the shared memory information structure ****/
+/* set values in the shared memory information structure */
    region->addr = shm;
    region->mid  = regid;
-   region->sid  = semid;
+   region->sid  = create_semaphore( memkey );
    region->key  = memkey;
+
+   return;
 }
 
-
-/******************** function tport_destroy *************************/
-/*                Destroy a shared memory region.                    */
-/*********************************************************************/
-
+/*
+ * tport_destroy() - Destroy a shared memory region.
+ * Arguments:
+ */
 void tport_destroy( SHM_INFO *region )
 {
-#ifndef _USE_POSIX_SHM
-   int res;
-   struct shmid_ds shmbuf;    /* shared memory data structure      */
-#endif
+/* Close and delete shared memory region */
+	close_shm_region( region );
+/* Close and delete semaphore */
+	destroy_semaphore( region );
 
-#ifdef _USE_POSIX_SHM
-/***** Close and delete shared memory region  *****/
-
-   if ( munmap(region->addr,region->addr->nbytes) == -1 )
-      tport_syserr( "tport_destroy munmap", region->key );
-
-   if ( close( region->mid ) == -1 )
-      tport_syserr( "tport_destroy close", region->key );
-
-   if ( shm_unlink(key_2_path(region->key,1)) == -1 )
-      tport_syserr( "tport_destroy sem_unlink", region->key );
-
-/***** Close and delete semaphore  *****/
-   if ( sem_close( region->sid ) == -1 )
-      tport_syserr( "tport_destroy sem_close", region->key );
-
-   if ( sem_unlink(key_2_path(region->key,0)) == -1 )
-      tport_syserr( "tport_destroy sem_unlink", region->key );
-
-#else
-/***** Detach from shared memory region *****/
-
-   res = shmdt( (char *) region->addr );
-   if ( res == -1 )
-      tport_syserr( "tport_destroy shmdt", region->key );
-
-/***** Destroy semaphore set for shared memory region *****/
-
-   /*
-   semarg->val = 0;
-   res = semctl( region->sid, 0, IPC_RMID, semarg );
-   */
-   res = semctl( region->sid, 0, IPC_RMID, 0 );
-   if ( res == -1 )
-      tport_syserr( "tport_destroy semctl", region->key );
-
-/***** Destroy shared memory region *****/
-
-   res = shmctl( region->mid, IPC_RMID, &shmbuf );
-   if ( res == -1 )
-      tport_syserr( "tport_destroy shmctl", region->key );
-#endif
+	return;
 }
 
 
-/******************** function tport_attach *************************/
-/*            Map to an existing shared memory region.              */
-/********************************************************************/
-
-void tport_attach( SHM_INFO *region,   /* info structure for memory region  */
-		   long      memkey )  /* key to shared memory region       */
+/*
+ * tport_attach() - Map to an existing shared memory region.
+ * Arguments:
+ *   info structure for memory region
+ *   key to shared memory region
+ */
+void tport_attach( SHM_INFO *region, long memkey )
 {
-   SHM_HEAD  *shm;         /* pointer to start of memory region */
-   long       nbytes;      /* size of memory region             */
+	int       regid;                                      /* shared memory file descriptor   */
+	SHM_HEAD *shm = attach_shm_region( &regid, memkey );  /* pointer to start of memory region */
 
-#ifdef _USE_POSIX_SHM
-   int             regid;     /* shared memory file descriptor   */
-   void	           *shmbuf;   /* shared memory pointer           */
-   sem_t           *semid;    /* semaphore identifier            */
-   int prot, flags;
-
-/**** open and map header; find out size memory region; close ****/
-   if ( (regid = shm_open( key_2_path(memkey,1), O_RDONLY, 0)) == -1 ) {
-      if ( memkey != shm_flag_key )
-      	tport_syserr( "tport_attach shm_open ->header", memkey );
-      /* Must have been called when using an old startstop, so no flag ring */
-      smf_region.addr = NULL;
-      return;
-   }
-   if ( (shmbuf = mmap(0, sizeof(SHM_HEAD), PROT_READ, MAP_SHARED, regid, 0)) == MAP_FAILED )
-      tport_syserr( "tport_attach mmap", memkey );
-   shm = (SHM_HEAD *)shmbuf;
-#else
-   int        regid;       /* shared memory region identifier   */
-   int        semid;       /* semaphore identifier              */
-   int        res;
-
-/**** attach to header; find out size memory region; detach ****/
-
-   regid = shmget( memkey, sizeof( SHM_HEAD ), 0 );
-   if ( regid == -1 ) {
-      if ( memkey != shm_flag_key )
-         tport_syserr( "tport_attach shmget ->header", memkey );
-      /* Must have been called when using an old startstop, so no flag ring */
-      smf_region.addr = NULL;
-      return;
-   }
-   shm = (SHM_HEAD *) shmat( regid, 0, SHM_RND );
-   if ( shm == (SHM_HEAD *) -1 )
-      tport_syserr( "tport_attach shmat ->header", memkey );
-#endif
-
-   nbytes = shm->nbytes;
-
-#ifdef _USE_POSIX_SHM
-   if ( close( regid ) == -1 )
-      tport_syserr( "tport_attach close ->header",  memkey );
-
-/**** reopen and map entire header; open semaphore ****/
-   if ( (regid = shm_open( key_2_path(memkey,1), O_RDWR, 0)) == -1 )
-      tport_syserr( "tport_attach shm_open ->header", memkey );
-
-   prot = PROT_READ | PROT_WRITE;
-   flags = MAP_SHARED | MAP_AUTOGROW;
-   if ( (shmbuf = mmap(0, nbytes, prot, flags, regid, 0)) == MAP_FAILED )
-      tport_syserr( "tport_attach mmap ->region", memkey );
-   shm = (SHM_HEAD *)shmbuf;
-
-   if ( (semid = sem_open(key_2_path(memkey,0), 0)) == (sem_t *)-1 )
-      tport_syserr( "tport_attach sem_open", memkey );
-#else
-   res = shmdt( (char *) shm );
-   if ( res == -1 )
-      tport_syserr( "tport_attach shmdt ->header", memkey );
-
-/**** reattach to the entire memory region; get semaphore ****/
-
-   regid = shmget( memkey, nbytes, 0 );
-   if ( regid == -1 )
-      tport_syserr( "tport_attach shmget ->region", memkey );
-
-   shm = (SHM_HEAD *) shmat( regid, 0, SHM_RND );
-   if ( shm == (SHM_HEAD *) -1 )
-      tport_syserr( "tport_attach shmat ->region", memkey );
-
-   semid = semget( memkey, 1, 0 );
-   if ( semid == -1 )
-      tport_syserr( "tport_attach semget", memkey );
-#endif
-
-/**** set values in the shared memory information structure ****/
+/* Set values in the shared memory information structure */
    region->addr = shm;
    region->mid  = regid;
-   region->sid  = semid;
+   region->sid  = get_semaphore( memkey );
    region->key  = memkey;
+/* Attach to flag if necessary; add our pid to flag */
+	if ( Flag_Init ) {
+		Flag_Init = 0;
+		shm_flag_key = GetKeyWithDefault( SHM_FLAG_RING, SHM_FLAG_DEFAULT_KEY );
+		tport_attach( &smf_region, shm_flag_key );
+	}
+	tport_addToFlag( region, getpid() );
 
-/**** attach to flag if necessary; add our pid to flag ****/
-   if ( Flag_Init ) {
-   	  Flag_Init = 0;
-   	  shm_flag_key = GetKeyWithDefault( SHM_FLAG_RING, SHM_FLAG_DEFAULT_KEY );
-   	  tport_attach( &smf_region, shm_flag_key );
-   }
-   tport_addToFlag( region, getpid() );
+   return;
 }
 
-/******************** function tport_detach **************************/
-/*                Detach from a shared memory region.                */
-/*********************************************************************/
-
+/*
+ * tport_detach() - Detach from a shared memory region.
+ */
 void tport_detach( SHM_INFO *region )
 {
-#ifdef _USE_POSIX_SHM
-   struct stat shm_stat;
-
-   /* silently return if the memory region has already been closed */
-   if ( fstat( region->mid, &shm_stat) == -1 )
-      if ( errno == EBADF )
-         return;
-# if 0
-   /* munmap is bad to do here because other threads will lose the region */
-   if ( munmap(region->addr,region->addr->nbytes) == -1 )
-      tport_syserr( "tport_detach munmap", region->key );
-# endif
-   if ( close( region->mid ) == -1 )
-      tport_syserr( "tport_detach close", region->key );
-#else
-   int res;
-/***** Detach from shared memory region *****/
-
-   res = shmdt( (char *) region->addr );
-   if ( res == -1 )
-      tport_syserr( "tport_detach shmdt", region->key );
-#endif
+	detach_shm_region( region );
+	return;
 }
 
-
-
-/*********************** function tport_putmsg ***********************/
-/*            Put a message into a shared memory region.	     */
-/*            Assigns a transport-layer sequence number.             */
-/*********************************************************************/
-
-int tport_putmsg( SHM_INFO *region,    /* info structure for memory region    */
-		  MSG_LOGO *putlogo,   /* type,module,instid of incoming msg  */
-		  long      length,    /* size of incoming message            */
-		  char     *msg )      /* pointer to incoming message         */
+/*
+ * tport_putmsg() - Put a message into a shared memory region.
+ *                  Assigns a transport-layer sequence number.
+ * Arguments:
+ *   info structure for memory region
+ *   type,module,instid of incoming msg
+ *   size of incoming message
+ *   pointer to incoming message
+ */
+int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 {
-   static volatile  MSG_TRACK  trak[NTRACK_PUT];   /* sequence number keeper   */
-   static volatile  int        nlogo;              /* # of logos seen so far   */
-   int               	      it;                 /* index into trak          */
+	static volatile MSG_TRACK trak[NTRACK_PUT];   /* sequence number keeper   */
+	static volatile int       nlogo;              /* # of logos seen so far   */
 #ifndef _USE_POSIX_SHM
    struct sembuf     sops;             /* semaphore operations;
                                              changed to non-static 980424:ldd */
    int res;
 #endif
-   SHM_HEAD         *shm;              /* pointer to start of memory region   */
-   char             *ring;             /* pointer to ring part of memory      */
-   long              ir;               /* index into memory ring              */
-   long              nfill;            /* # bytes from ir to ring's last-byte */
-   long              nwrap;            /* # bytes to wrap to front of ring    */
-   TPORT_HEAD        hd;               /* transport layer header to put       */
-   char             *h;                /* pointer to transport layer header   */
-   TPORT_HEAD        old;              /* transport header of oldest msg      */
-   char             *o;                /* pointer to oldest transport header  */
-   int              j;
-   int              triesLeft;
+	TPORT_HEAD hd;                                     /* transport layer header to put       */
+	TPORT_HEAD old;                                    /* transport header of oldest msg      */
+	SHM_HEAD  *shm  = region->addr;                    /* pointer to start of memory region   */
+	char      *ring = (char *)shm + sizeof(SHM_HEAD);  /* pointer to ring part of memory      */
+	char      *h    = (char *)(&hd);                   /* pointer to transport layer header   */
+	char      *o    = (char *)(&old);                  /* pointer to oldest transport header  */
 
-/**** First time around, init the sequence counters, semaphore controls ****/
+	long ir;               /* index into memory ring              */
+	long nfill;            /* # bytes from ir to ring's last-byte */
+	long nwrap;            /* # bytes to wrap to front of ring    */
+	int  j;
+	int  triesLeft;
+	int  it;               /* index into trak          */
 
-   if (Put_Init)
-   {
-       nlogo    = 0;
+/* First time around, init the sequence counters, semaphore controls */
+	if ( Put_Init ) {
+		nlogo = 0;
+		for ( j = 0; j < NTRACK_PUT; j++ ) {
+			trak[j].memkey      = 0;
+			trak[j].logo.type   = 0;
+			trak[j].logo.mod    = 0;
+			trak[j].logo.instid = 0;
+			trak[j].seq         = 0;
+			trak[j].keyout      = 0;
+		}
+		Put_Init = 0;
+	}
 
-       for( j=0 ; j < NTRACK_PUT ; j++ )
-       {
-          trak[j].memkey      = 0;
-          trak[j].logo.type   = 0;
-          trak[j].logo.mod    = 0;
-          trak[j].logo.instid = 0;
-          trak[j].seq         = 0;
-          trak[j].keyout      = 0;
-       }
-
-       Put_Init = 0;
-   }
-
-/**** Set up pointers for shared memory, etc. ****/
-
-   shm  = region->addr;
-   ring = (char *) shm + sizeof(SHM_HEAD);
-   h    = (char *) (&hd);
-   o    = (char *) (&old);
-
-/**** First, see if the incoming message will fit in the memory region ****/
-
-   if ( length + sizeof(TPORT_HEAD) > shm->keymax )
-   {
-      fprintf( stdout,
-              "ERROR: tport_putmsg; message too large (%ld) for Region %ld\n",
-               length, region->key);
-      return( PUT_TOOBIG );
-   }
-
-/**** Change semaphore; let others know you're using tracking structure & memory  ****/
-
+/* First, see if the incoming message will fit in the memory region */
+	if ( length + sizeof(TPORT_HEAD) > shm->keymax ) {
+		fprintf(stdout, "ERROR: tport_putmsg; message too large (%ld) for Region %ld\n", length, region->key);
+		return PUT_TOOBIG;
+	}
+/* Change semaphore; let others know you're using tracking structure & memory */
 #ifdef _USE_POSIX_SHM
-   if ( sem_wait(region->sid) == -1 )
-      tport_syserr( "tport_putmsg sem_wait ->inuse", region->key );
+	if ( sem_wait(region->sid) == -1 )
+		tport_syserr( "tport_putmsg sem_wait ->inuse", region->key );
 #else
-   sops.sem_num = 0;   /* moved outside Put_Init loop 980424:ldd */
-   sops.sem_flg = 0;   /* moved outside Put_Init loop 980424:ldd */
-   sops.sem_op = SHM_INUSE;
-   triesLeft = RING_LOCK_TRIES;
-   while ( triesLeft > 0 && (res = semop( region->sid, &sops, 1 )) == -1 ) {
-      if ( errno != EINTR )
-          break;
-      triesLeft--;
-   }
-   if (res == -1)
-      tport_syserr( "tport_putmsg semop ->inuse", region->key );
+	sops.sem_num = 0;   /* moved outside Put_Init loop 980424:ldd */
+	sops.sem_flg = 0;   /* moved outside Put_Init loop 980424:ldd */
+	sops.sem_op = SHM_INUSE;
+	triesLeft = RING_LOCK_TRIES;
+	while ( triesLeft > 0 && (res = semop( region->sid, &sops, 1 )) == -1 ) {
+		if ( errno != EINTR )
+			break;
+		triesLeft--;
+	}
+	if (res == -1)
+		tport_syserr( "tport_putmsg semop ->inuse", region->key );
 #endif
 
-/**** Next, find incoming logo in list of combinations already seen ****/
+/* Next, find incoming logo in list of combinations already seen */
+	for( it = 0; it < nlogo; it++ ) {
+		if ( region->key     != trak[it].memkey      )
+			continue;
+		if ( putlogo->type   != trak[it].logo.type   )
+			continue;
+		if ( putlogo->mod    != trak[it].logo.mod    )
+			continue;
+		if ( putlogo->instid != trak[it].logo.instid )
+			continue;
+		goto build_header;
+	}
 
-   for( it=0 ; it < nlogo ; it++ )
-   {
-      if ( region->key     != trak[it].memkey      )  continue;
-      if ( putlogo->type   != trak[it].logo.type   )  continue;
-      if ( putlogo->mod    != trak[it].logo.mod    )  continue;
-      if ( putlogo->instid != trak[it].logo.instid )  continue;
-      goto build_header;
-   }
-
-/**** Incoming logo is a new combination; store it, if there's room ****/
-
-   if ( nlogo == NTRACK_PUT )
-   {
-      fprintf( stdout,
-              "ERROR: tport_putmsg; exceeded NTRACK_PUT, msg not sent\n");
-      return( PUT_NOTRACK );
-   }
-   it = nlogo;
-   trak[it].memkey =  region->key;
-   trak[it].logo   = *putlogo;
-   nlogo++;
-
+/* Incoming logo is a new combination; store it, if there's room */
+	if ( nlogo == NTRACK_PUT ) {
+		fprintf(stdout, "ERROR: tport_putmsg; exceeded NTRACK_PUT, msg not sent\n");
+		return PUT_NOTRACK;
+	}
+	it = nlogo;
+	trak[it].memkey =  region->key;
+	trak[it].logo   = *putlogo;
+	nlogo++;
 /**** Store everything you need in the transport header ****/
-
 build_header:
-   hd.start = FIRST_BYTE;
-   hd.size  = length;
-   hd.logo  = trak[it].logo;
-   hd.seq   = trak[it].seq++;
+	hd.start = FIRST_BYTE;
+	hd.size  = length;
+	hd.logo  = trak[it].logo;
+	hd.seq   = trak[it].seq++;
 
 /**** In shared memory, see if keyin will wrap; if so, reset keyin and keyold ****/
-
-   if ( (RING_INDEX_T) ( shm->keyin + sizeof( TPORT_HEAD ) + length ) < shm->keyold )
-   {
-       shm->keyin  = shm->keyin  % shm->keymax;
-       shm->keyold = shm->keyold % shm->keymax;
-       if ( shm->keyin <= shm->keyold ) shm->keyin += shm->keymax;
-     /*fprintf( stdout,
-               "NOTICE: tport_putmsg; keyin wrapped & reset; Region %ld\n",
-                region->key );*/
-   }
+	if ( (RING_INDEX_T)(shm->keyin + sizeof(TPORT_HEAD) + length) < shm->keyold ) {
+		shm->keyin  %= shm->keymax;
+		shm->keyold %= shm->keymax;
+		if ( shm->keyin <= shm->keyold )
+			shm->keyin += shm->keymax;
+		/*
+			fprintf(stdout, "NOTICE: tport_putmsg; keyin wrapped & reset; Region %ld\n", region->key );
+		*/
+	}
 
 /**** Then see if there's enough room for new message in shared memory ****/
 /****      If not, "delete" oldest messages until there's room         ****/
-
-   while( shm->keyin + sizeof(TPORT_HEAD) + length - shm->keyold > shm->keymax )
-   {
-      ir = shm->keyold % shm->keymax;
-      if ( ring[ir] != FIRST_BYTE )
-      {
-          fprintf( stdout,
-                  "ERROR: tport_putmsg; keyold not at FIRST_BYTE, Region %ld\n",
-                   region->key );
-          exit( 1 );
-      }
-      for ( j=0 ; j < sizeof(TPORT_HEAD) ; j++ )
-      {
-         if ( ir >= shm->keymax )   ir -= shm->keymax;
-         o[j] = ring[ir++];
-      }
-      shm->keyold += sizeof(TPORT_HEAD) + old.size;
-   }
+	while ( (shm->keyin + sizeof(TPORT_HEAD) + length - shm->keyold) > shm->keymax ) {
+		ir = shm->keyold % shm->keymax;
+		if ( ring[ir] != FIRST_BYTE ) {
+			fprintf(stdout, "ERROR: tport_putmsg; keyold not at FIRST_BYTE, Region %ld\n", region->key);
+			exit(1);
+		}
+		for ( j = 0; j < sizeof(TPORT_HEAD); j++ ) {
+			if ( ir >= shm->keymax )
+				ir -= shm->keymax;
+			o[j] = ring[ir++];
+		}
+		shm->keyold += sizeof(TPORT_HEAD) + old.size;
+	}
 
 /**** Now copy transport header into shared memory by chunks... ****/
-
-   ir = shm->keyin % shm->keymax;
-   nwrap = ir + sizeof(TPORT_HEAD) - shm->keymax;
-   if ( nwrap <= 0 )
-   {
-         memcpy( (void *) &ring[ir], (void *) h, sizeof(TPORT_HEAD) );
-   }
-   else
-   {
-         nfill = sizeof(TPORT_HEAD) - nwrap;
-         memcpy( (void *) &ring[ir], (void *) &h[0],     nfill );
-         memcpy( (void *) &ring[0],  (void *) &h[nfill], nwrap );
-   }
-   ir += sizeof(TPORT_HEAD);
-   if ( ir >= shm->keymax )  ir -= shm->keymax;
+	ir = shm->keyin % shm->keymax;
+	nwrap = ir + sizeof(TPORT_HEAD) - shm->keymax;
+	if ( nwrap <= 0 ) {
+		memcpy( (void *) &ring[ir], (void *) h, sizeof(TPORT_HEAD) );
+	}
+	else {
+		nfill = sizeof(TPORT_HEAD) - nwrap;
+		memcpy( (void *) &ring[ir], (void *) &h[0],     nfill );
+		memcpy( (void *) &ring[0],  (void *) &h[nfill], nwrap );
+	}
+	ir += sizeof(TPORT_HEAD);
+	if ( ir >= shm->keymax )
+		ir -= shm->keymax;
 
 /**** ...and copy message into shared memory by chunks ****/
 
@@ -928,7 +663,7 @@ int tport_flush( SHM_INFO  *region,   /* info structure for memory region  */
 {
 	int res;
 	long length;
-	
+
 	do{
 		res = tport_getmsg( region, getlogo, nget, logo, &length, NULL, 0 );
 	} while (res !=GET_NONE);
@@ -997,12 +732,12 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
    	start = 0;
    	stop = smf->nPids;
    	break;
-   	
+
    case FF_FLAG2ADD:
    	start = 0;
    	stop = smf->nPidsToDie;
    	break;
-   	
+
    case FF_FLAG2DIE:
     if ( pid == TERMINATE ) {
 	   	/* Terminate supercedes all individial process termination requests */
@@ -1027,7 +762,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
    		stop = smf->nPids;
    	}
    	break;
-   	
+
    case FF_GETFLAG:
   	if ( smf->nPidsToDie>0 && smf->pid[0] == TERMINATE ) {
    		/* All modules being terminated */
@@ -1036,7 +771,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
    	start = 0;
    	stop = smf->nPidsToDie;
    	break;
-   	
+
    case FF_CLASSIFY:
    	start = 0;
    	stop = smf->nPids;
@@ -1046,7 +781,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
    for ( i=start; i<stop; i++ )
 		if ( smf->pid[i] == pid )
 			break;
-	
+
    switch ( op ) {
    case FF_REMOVE:
 	if ( i >= stop ) {
@@ -1062,7 +797,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
 	smf->pid[smf->nPidsToDie] = smf->pid[smf->nPids];
 	ret_val = pid;
 	break;
-	
+
    case FF_FLAG2ADD:
 	if ( i >= stop ) {
 		/* If no room, we'll have to treat as old-style */
@@ -1073,7 +808,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
 	}
 	ret_val = pid;
 	break;
-	
+
    case FF_FLAG2DIE:
    	if ( ret_val == 0 ) {
 		if ( i >= stop ) {
@@ -1102,7 +837,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
 		}
 	}
 	break;
-	
+
    case FF_CLASSIFY:
 	ret_val = ( i >= stop ) ? 0 : ( i >= smf->nPidsToDie ) ? 1 : 2;
    }
@@ -1138,7 +873,7 @@ void tport_putflag( SHM_INFO *region,  /* shared memory info structure */
 /******************** function tport_detachFromFlag ******************/
 /* Remove pid from flag; return 0 if pid not in flag, pid otherwise  */
 /*********************************************************************/
-int tport_detachFromFlag( SHM_INFO *region, int pid ) 	
+int tport_detachFromFlag( SHM_INFO *region, int pid )
 {
 	return tport_doFlagOp( region, pid, FF_REMOVE );
 }
@@ -1148,7 +883,7 @@ int tport_detachFromFlag( SHM_INFO *region, int pid )
 /*   Add pid from flag; return 0 if pid not in flag, pid otherwise   */
 /*********************************************************************/
 
-int tport_addToFlag( SHM_INFO *region, int pid ) 	
+int tport_addToFlag( SHM_INFO *region, int pid )
 {
 	return tport_doFlagOp( region, pid, FF_FLAG2ADD );
 }
@@ -1884,38 +1619,38 @@ void tport_buferror( short  ierr, 	/* 2-byte error word       */
 }
 
 
-/************************ function tport_syserr **********************/
-/*                 Print a system error and terminate.               */
-/*********************************************************************/
-
-void tport_syserr( char *msg,   /* message to print (which routine had an error) */
-		   long  key )  /* identifies which memory region had the error  */
+/*
+ * tport_syserr() - Print a system error and terminate.
+ * Arguments:
+ *   message to print (which routine had an error)
+ *   identifies which memory region had the error
+ */
+void tport_syserr( const char *msg, const long key )
 {
-#if defined(_LINUX)  || defined(_SOLARIS)
-   extern int   sys_nerr;
-   extern const char *const sys_errlist[];
+#if defined(_LINUX) || defined(_SOLARIS)
+	extern int               sys_nerr;
+	extern const char *const sys_errlist[];
 #elif defined(_MACOSX)
-   extern int const sys_nerr;
-   extern const char *const sys_errlist[];
+	extern int const         sys_nerr;
+	extern const char *const sys_errlist[];
 #else
-   extern  char *sys_errlist[];
+	extern  char *sys_errlist[];
 #endif
 
-   fprintf( stdout, "ERROR: %s (%d", msg, errno);
-
+/* */
+	fprintf(stdout, "ERROR: %s (%d", msg, errno);
 #ifdef _UNIX
-   if ( errno > 0 )
-      fprintf( stdout,"; %s) Region: %ld\n", strerror(errno), key );
+	if ( errno > 0 )
+		fprintf(stdout,"; %s) Region: %ld\n", strerror(errno), key);
 #else
-   if ( errno > 0 && errno < sys_nerr )
-      fprintf( stdout,"; %s) Region: %ld\n", sys_errlist[errno], key );
+	if ( errno > 0 && errno < sys_nerr )
+		fprintf(stdout,"; %s) Region: %ld\n", sys_errlist[errno], key);
 #endif
-   else
-      fprintf( stdout, ") Region: %ld\n", key );
+	else
+		fprintf(stdout, ") Region: %ld\n", key);
 
-   exit( 1 );
+	exit(1);
 }
-
 
 /******************* function tport_createFlag **********************/
 /*        Create the shared memory flag & its semaphore,            */
@@ -1948,3 +1683,362 @@ void  tport_destroyFlag()
 {
    tport_destroy( &smf_region );
 }
+
+#ifdef _USE_POSIX_SHM
+/* Compatibility fuctions to establish conversion between IPC-style keys (used
+	by most earthworm setup files) to POSIX shared memory path identifiers.
+	We need this kludge until everyone is ready to convert their setup files
+	to use a POSIX path instead of an IPC key.  (Each  module would also
+	need to parse the POSIX path instead of an IPC key, and the SHM_INFO struct
+	would need to have POSIX path and file descriptor members instead of IPC
+	key and ID members.)  Since the goal for now is a fairly transparent migration
+	to POSIX, we'll keep the IPC-style keys and make an equivalent path from the key.
+	For those POSIX machines that actually implement POSIX shared memory paths in
+	the filesystem (e.g., IRIX), make sure the BASE macros below refer to an
+	appropriate place, or modify as needed. */
+#define BASE_SHM      "/tmp/ew_shm_"
+#define BASE_SEM      "/tmp/ew_sem_"
+#define BASE_SHM_FLAG "/tmp/ew_shmFlag_"
+#define BASE_SEM_FLAG "/tmp/ew_semFlag_"
+
+/*
+ *
+ */
+static char *key_2_path( const long memkey, const int is_shm )
+{
+	static char result[256] = { 0 };
+
+	if ( memkey == shm_flag_key )
+		sprintf(result, "%s%ld", is_shm ? BASE_SHM_FLAG : BASE_SEM_FLAG, memkey);
+	else
+		sprintf(result, "%s%ld", is_shm ? BASE_SHM : BASE_SEM, memkey);
+
+	return result;
+}
+
+/*
+ *
+ */
+static int path_2_key( const char *path, const int is_shm )
+{
+	return atoi(path + strlen(is_shm ? BASE_SHM : BASE_SEM));
+}
+
+/*
+ *
+ */
+static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long memkey )
+{
+	void *result;  /* shared memory pointer */
+	int   omask;
+	int   prot
+	int   flags;
+
+/* Destroy memory region if it already exists */
+	if ( (*regid = shm_open(key_2_path( memkey, 1 ), O_RDONLY, 0)) != -1 ) {
+		if ( close(*regid) == -1 )
+			tport_syserr( "tport_create close", memkey );
+		if ( shm_unlink(key_2_path( memkey,1 )) == -1 )
+			tport_syserr( "tport_create shm_unlink", memkey );
+	}
+/* Temporarily clear any existing file creation mask */
+	omask = umask(0);
+/* Connect and map shared memory region */
+	flags = O_CREAT | O_RDWR | O_EXCL;
+	if ( (*regid = shm_open(key_2_path( memkey, 1 ), flags, SHM_DEFAULT_MASK)) == -1 )
+		tport_syserr( "tport_create shm_open", memkey );
+
+	prot = PROT_READ | PROT_WRITE;
+	flags = MAP_SHARED;  /* The flag MAP_AUTOGROW is not documented on every system! */
+	if ( (result = mmap(0, nbytes, prot, flags, *regid, 0)) == MAP_FAILED )
+		tport_syserr( "tport_create mmap", memkey );
+/* Restore any existing file creation mask */
+	if ( omask )
+		umask(omask);
+
+	return (SHM_HEAD *)result;
+}
+
+/*
+ *
+ */
+static sem_t create_semaphore( const long memkey )
+{
+	sem_t result;
+	int   omask;
+
+/* Destroy semaphore if it already exists */
+	if ( (result = sem_open(key_2_path( memkey, 0 ), 0)) != (sem_t *)-1 ) {
+		if ( sem_close(result) == -1 )
+			tport_syserr( "tport_create sem_close", memkey );
+		if ( sem_unlink(key_2_path( memkey, 0 )) == -1 )
+			tport_syserr( "tport_create sem_unlink", memkey );
+	}
+/* Temporarily clear any existing file creation mask */
+	omask = umask(0);
+/* Make semaphore for this shared memory region & set semval = SHM_FREE */
+	if ( (result = sem_open(key_2_path( memkey, 0 ), O_CREAT, SHM_DEFAULT_MASK, SHM_FREE)) == (sem_t *)-1 )
+		tport_syserr( "tport_create semget", memkey );
+/* Restore any existing file creation mask */
+	if ( omask )
+		umask(omask);
+
+	return result;
+}
+
+/*
+ *
+ */
+static void close_shm_region( SHM_INFO *region )
+{
+/* Close and delete shared memory region */
+	if ( munmap(region->addr, region->addr->nbytes) == -1 )
+		tport_syserr( "tport_destroy munmap", region->key );
+	if ( close(region->mid) == -1 )
+		tport_syserr( "tport_destroy close", region->key );
+	if ( shm_unlink(key_2_path( region->key, 1 )) == -1 )
+		tport_syserr( "tport_destroy sem_unlink", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
+static void destroy_semaphore( SHM_INFO *region )
+{
+/* Close and delete semaphore */
+	if ( sem_close(region->sid) == -1 )
+		tport_syserr( "tport_destroy sem_close", region->key );
+	if ( sem_unlink(key_2_path( region->key, 0 )) == -1 )
+		tport_syserr( "tport_destroy sem_unlink", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
+static SHM_HEAD *attach_shm_region( int *regid, const long memkey )
+{
+    void  *result;   /* shared memory pointer         */
+	int    prot
+	int    flags;
+	size_t nbytes;
+
+/* Open and map header; find out size memory region; close */
+	if ( (*regid = shm_open(key_2_path( memkey, 1 ), O_RDONLY, 0)) == -1 ) {
+		if ( memkey != shm_flag_key )
+			tport_syserr( "tport_attach shm_open ->header", memkey );
+	/* Must have been called when using an old startstop, so no flag ring */
+		smf_region.addr = NULL;
+		return NULL;
+	}
+	if ( (result = mmap(0, sizeof(SHM_HEAD), PROT_READ, MAP_SHARED, *regid, 0)) == MAP_FAILED )
+		tport_syserr( "tport_attach mmap", memkey );
+/* Fetch the size of entire shared memory */
+	nbytes = ((SHM_HEAD *)result)->nbytes;
+/* Then just close & unmap it */
+	if ( munmap(result, sizeof(SHM_HEAD)) == -1 )
+		tport_syserr( "tport_attach munmap", memkey );
+	if ( close(*regid) == -1 )
+		tport_syserr( "tport_attach close ->header",  memkey );
+
+/* Reopen and map entire header */
+	if ( (*regid = shm_open(key_2_path( memkey, 1 ), O_RDWR, 0)) == -1 )
+		tport_syserr( "tport_attach shm_open ->header", memkey );
+
+	prot = PROT_READ | PROT_WRITE;
+	flags = MAP_SHARED;  /* The flag MAP_AUTOGROW is not documented on every system! */
+	if ( (result = mmap(0, nbytes, prot, flags, *regid, 0)) == MAP_FAILED )
+		tport_syserr( "tport_attach mmap ->region", memkey );
+
+    return (SHM_HEAD *)result;
+}
+
+/*
+ *
+ */
+static sem_t get_semaphore( const long memkey )
+{
+	sem_t result;
+
+/* Destroy semaphore if it already exists */
+	if ( (result = sem_open(key_2_path( memkey, 0 ), 0)) == (sem_t *)-1 )
+		tport_syserr( "tport_attach sem_open", memkey );
+
+	return result;
+}
+
+/*
+ *
+ */
+static void detach_shm_region( SHM_INFO *region )
+{
+	struct stat shm_stat;
+
+/* Silently return if the memory region has already been closed */
+	if ( fstat(region->mid, &shm_stat) == -1 )
+		if ( errno == EBADF )
+			return;
+/*
+ * Origin comment from earthworm:
+ *   munmap is bad to do here because other threads will lose the region.
+ * New comment:
+ *   I think the attach and detach should be paired, that means every thread should have its own
+ *   memory space for region or only one region in the entire process.
+ */
+	if ( munmap(region->addr, region->addr->nbytes) == -1 )
+		tport_syserr( "tport_detach munmap", region->key );
+	if ( close(region->mid) == -1 )
+		tport_syserr( "tport_detach close", region->key );
+
+	return;
+}
+#else /* ifdef _USE_POSIX_SHM */
+/*
+ *
+ */
+static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long memkey )
+{
+	SHM_HEAD       *result = NULL;
+	struct shmid_ds shmbuf;    /* shared memory data structure      */
+	int             res;
+
+/* Destroy memory region if it already exists */
+	if ( (*regid = shmget(memkey, nbytes, 0)) != -1 ) {
+		res = shmctl(*regid, IPC_RMID, &shmbuf);
+		if ( res == -1 )
+			tport_syserr( "tport_create shmctl", memkey );
+	}
+
+/* Real create shared memory region */
+	*regid = shmget(memkey, nbytes, IPC_CREAT | 0666);
+	if ( *regid == -1 )
+		tport_syserr( "tport_create shmget", memkey );
+
+/* Attach to shared memory region */
+	result = (SHM_HEAD *)shmat(*regid, 0, SHM_RND);
+	if ( result == (SHM_HEAD *)-1 )
+		tport_syserr( "tport_create shmat", memkey );
+
+	return result;
+}
+
+/*
+ *
+ */
+static int create_semaphore( const long memkey )
+{
+	int result;
+
+/* Make semaphore for this shared memory region & set semval = SHM_FREE */
+	result = semget(memkey, 1, IPC_CREAT | 0666);
+	if ( result == -1 )
+		tport_syserr( "tport_create semget", memkey );
+
+	//semarg->val = SHM_FREE;
+	//res = semctl(result, 0, SETVAL, semarg);
+
+	res = semctl(result, 0, SETVAL, SHM_FREE);
+	if ( res == -1 )
+		tport_syserr( "tport_create semctl", memkey );
+
+	return result;
+}
+
+/*
+ *
+ */
+static void close_shm_region( SHM_INFO *region )
+{
+	struct shmid_ds shmbuf;  /* shared memory data structure */
+
+/* Detach from shared memory region then destroy it */
+	if ( shmdt((char *)region->addr) == -1 )
+		tport_syserr( "tport_destroy shmdt", region->key );
+	if ( shmctl(region->mid, IPC_RMID, &shmbuf) == -1 )
+		tport_syserr( "tport_destroy shmctl", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
+static void destroy_semaphore( SHM_INFO *region )
+{
+/* Destroy semaphore set for shared memory region */
+	//semarg->val = 0;
+	//semctl(region->sid, 0, IPC_RMID, semarg);
+	if ( semctl(region->sid, 0, IPC_RMID, 0) == -1 )
+		tport_syserr( "tport_destroy semctl", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
+static SHM_HEAD *attach_shm_region( int *regid, const long memkey )
+{
+	SHM_HEAD *result;      /* pointer to start of memory region */
+	size_t    nbytes;      /* size of memory region             */
+
+/* Attach to header; find out size memory region; detach */
+	*regid = shmget(memkey, sizeof(SHM_HEAD), 0);
+	if ( *regid == -1 ) {
+		if ( memkey != shm_flag_key )
+			tport_syserr( "tport_attach shmget ->header", memkey );
+	/* Must have been called when using an old startstop, so no flag ring */
+		smf_region.addr = NULL;
+		return NULL;
+	}
+	result = (SHM_HEAD *)shmat(*regid, 0, SHM_RND);
+	if ( shm == (SHM_HEAD *)-1 )
+		tport_syserr( "tport_attach shmat ->header", memkey );
+/* Fetch the size of entire shared memory */
+	nbytes = result->nbytes;
+/* Then just detach it */
+	if ( shmdt((char *)result) == -1 )
+		tport_syserr( "tport_attach shmdt ->header", memkey );
+
+/* Reattach to the entire memory region */
+	*regid = shmget(memkey, nbytes, 0);
+	if ( *regid == -1 )
+		tport_syserr( "tport_attach shmget ->region", memkey );
+
+	result = (SHM_HEAD *)shmat(*regid, 0, SHM_RND);
+	if ( result == (SHM_HEAD *)-1 )
+		tport_syserr( "tport_attach shmat ->region", memkey );
+
+    return result;
+}
+
+/*
+ *
+ */
+static int get_semaphore( const long memkey )
+{
+	int result;
+
+/* Destroy semaphore if it already exists */
+	result = semget(memkey, 1, 0);
+	if ( result == -1 )
+		tport_syserr( "tport_attach semget", memkey );
+
+	return result;
+}
+
+/*
+ *
+ */
+static void detach_shm_region( SHM_INFO *region )
+{
+/* Detach from shared memory region */
+	if ( shmdt((char *)region->addr) == -1 )
+		tport_syserr( "tport_detach shmdt", region->key );
+
+	return;
+}
+#endif
