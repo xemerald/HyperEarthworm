@@ -1,0 +1,122 @@
+# The single-threaded logit is no longer used; everything uses the multi-threaded logit_mt now
+
+CFLAGS = $(GLOBALFLAGS)
+
+L = $(EW_HOME)/$(EW_VERSION)/lib
+I = $(EW_HOME)/$(EW_VERSION)/include
+
+OBJS = \
+	ahputaway.o \
+	base64.o \
+	brent.o \
+	butterworth.o \
+	chron3.o \
+	complex_math.o \
+	cosmos0putaway.o \
+	convertInstResponse.o \
+	earthworm_defs.o \
+	ew_nevent_message.o \
+	ew_spectra_io.o \
+	fft_prep.o \
+	fft99.o \
+	fleng.o \
+	geo_to_km.o \
+	geom.o \
+	get_ip_format_string.o \
+	getutil.o \
+	glevt_2_ewevent.o \
+	global_amp_rw.o \
+	global_loc_rw.o \
+	global_msg.o \
+	global_pick_rw.o \
+	gma.o \
+	gseputaway.o \
+	ioc_filter.o \
+	k2evt2ew.o \
+	kom.o \
+	lockfile.o \
+	logit_mt.o \
+	make_triglist.o \
+	mem_circ_queue.o \
+	mnbrak.o \
+	mseedputaway.o \
+	neic2scn.o \
+	parse_ip_address.o \
+	parse_trig.o \
+	parse_usnsn.o \
+	priority_queue.o \
+	putaway.o \
+	rayloc_message_rw.o \
+	rdpickcoda.o \
+	read_arc.o \
+	residue.o \
+	rw_coda_aav.o \
+	rw_mag.o \
+	rw_strongmotion.o \
+	rw_strongmotionII.o \
+	sacputaway.o \
+	seiputaway.o \
+	seiutils.o \
+	site.o \
+	socket_ew_common.o \
+	sqlite3.o \
+	startstop_lib.o \
+	startstop_unix_generic.o \
+	sudsputaway.o \
+	swap.o \
+	tankputaway.o \
+	tlay.o \
+	transfer.o \
+	transferFunction.o \
+	trheadconv.o \
+	uwputaway.o \
+	watchdog_client.o \
+	wfdiscputaway.o \
+	ws_clientII.o \
+	ws_clientIIx.o \
+	ws_clientII_no_location.o \
+	ws2ts.o \
+	xfrm.o \
+	nordic.o
+#	logit.o \
+#	wave_client.o
+
+$L/libew_util.a: $(OBJS) libmseed signing
+	ar rvs $@ *.o
+	ranlib $@
+	cp *.o $L/
+
+startstop_unix_generic.o: startstop_unix_generic.c $I/startstop_unix_generic.h
+
+libmseed \
+signing:: PHONY
+	@cd $@ && \
+		echo ---------- ; \
+		echo Making $@ in: `pwd` ; \
+		$(MAKE) -f makefile.unix
+
+libmseed:: PHONY
+	@cd $@ && \
+		echo Installing $@ in: `pwd` ; \
+		$(MAKE) -f makefile.unix install
+
+
+# Clean-up rules
+clean:	clean/here \
+	clean/libmseed \
+	clean/signing
+
+clean/here: PHONY
+	-$(RM) a.out core *.o *.obj *% *~
+	-$(RM) $L/libew_util.a $L/libew_util.lib
+
+clean/libmseed \
+clean/signing:: PHONY
+	-@cd $(@F) && \
+		echo Cleaning in: `pwd` ; \
+		$(MAKE) -f makefile.unix clean
+
+clean/libmseed:: PHONY
+	-$(RM) $L/libmseed.a $L/libmseed.lib
+
+PHONY:

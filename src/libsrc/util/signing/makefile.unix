@@ -1,0 +1,18 @@
+CFLAGS = $(GLOBALFLAGS)
+
+L = $(EW_HOME)/$(EW_VERSION)/lib
+B = $(EW_HOME)/$(EW_VERSION)/bin
+
+OBJS = \
+	decode.o \
+	encode.o
+
+objs: $(OBJS)
+	cp *.o $L/
+
+
+# Clean-up rules
+clean: PHONY
+	-$(RM) a.out core *.o *.obj *% *~
+
+PHONY:

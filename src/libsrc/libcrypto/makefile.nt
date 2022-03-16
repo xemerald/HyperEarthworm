@@ -1,0 +1,33 @@
+!IF "$(EW_DEBUG)" == "1"
+!ELSE
+NODEBUG = 1
+!ENDIF
+
+!include <Win32.Mak>
+
+CFLAGS  = $(cflags)    $(cdebug) $(cvarsmt)   $(GLOBALFLAGS)
+
+L = $(EW_HOME)\$(EW_VERSION)\lib
+
+LIB = libcrypto
+
+OBJS = \
+	memxor.obj \
+	hmac-sha1.obj \
+	sha1.obj
+
+all: $L\$(LIB).lib
+
+$L\$(LIB).lib: $(OBJS)
+	lib /nologo /out:$@ $(OBJS)
+
+$L\$(DLL).dll: $(OBJS)
+	$(link) /dll /nologo /out:$@ $(OBJS)
+
+
+# Clean-up rules
+clean: PHONY
+	-del a.out core *.o *.obj *% *~
+	-del $L\$(LIB).a $L\$(LIB).lib $L\$(LIB).dll
+
+PHONY:

@@ -1,0 +1,31 @@
+CFLAGS = $(GLOBALFLAGS)
+
+L = $(EW_HOME)/$(EW_VERSION)/lib
+
+OBJS = \
+	copyfile.o \
+	dirops_ew.o \
+	getavail.o \
+	getsysname_ew.o \
+	lockfile_ew.o \
+	pipe.o \
+	remote_copy.o \
+	sema_ew.o \
+	sendmail.o \
+	sendpage.o \
+	sleep_ew.o \
+	socket_ew.o \
+	threads_ew.o \
+	time_ew.o \
+	transport.o \
+	wait_timer.o
+
+all: $(OBJS)
+	cp *.o $L/
+
+
+# Clean-up rules
+clean: PHONY
+	-$(RM) a.out core *.o *.obj *% *~
+
+PHONY:

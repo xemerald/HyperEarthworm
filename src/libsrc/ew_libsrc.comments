@@ -1,0 +1,27 @@
+/************************************************
+************ SPECIAL FORMATTED COMMENT **********
+EW API FORMATTED COMMENT
+TYPE LIBRARY
+
+LIBRARY  EW_LIBSRC
+
+LOCATION THIS_FILE
+
+DESCRIPTION This is the Earthworm library that
+is contained in $EW_VERSION/lib, and whose source
+is in $EW_VERSION/src/libsrc and its various 
+sub-directories.
+
+Earthworm libsrc is broken into tho sections:
+platform independent, which resides in 
+src/libsrc/util;  and platform-dependent which
+resides in src/libsrc/<PLATFORM>, where platform
+is currently either "winnt", "unix" or "solaris".
+
+qlib2 library is a generic purpose library for 
+manipulating with MiniSEED records (IGD: added on
+2006/11/16)
+
+*************************************************
+************************************************/
+

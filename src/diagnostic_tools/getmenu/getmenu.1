@@ -1,0 +1,37 @@
+.TH getmenu 1 "27 November, 1997"
+.SH NAME
+getmenu \- Get the menu from an Earthworm wave server.
+.SH SYNOPSIS
+.BI getmenu " host:port"
+.SH DESCRIPTION
+.B getmenu
+retrieves and prints the menu from the wave server running on 
+.I host
+at TCP 
+.IR port .
+The menu is a list of all the station-component-network-location (SCNL) combinations
+and their time period currently available from the wave server. This menu does
+NOT identify any gaps in the data at this wave server.
+.I host
+can be a hostname or an IP address.
+.LP
+Currently the University of Washington runs its wave server on
+.B verme
+(verme.geophys.washington.edu) on ports
+.B 16021
+and
+.BR 16022 .
+.SH "SEE ALSO"
+.nf
+earth2uw(n)
+.fi
+.SH "BUGS AND CAVEATS"
+.SH AUTHOR
+.nf
+Pete Lombard
+
+Earthworm provided by Alex Bittenbinder, Barbara Bogaert, 
+Lynn Dietz, and Will Kohler of the US Geological Survey,
+Menlo Park, California
+
+.fi

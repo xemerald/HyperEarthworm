@@ -1,0 +1,32 @@
+==============================================================================
+
+2014/05/01
+
+1.  The Makefile has now been modified to build 32-bit libraries into 
+to subdirectory lib, and 64-bit libraries into the subdirectory lib64.
+The filenames of the 64-bit libraries no longer contain a "64" in them.
+
+lib:
+libqlib2.a  libqlib2.debug.a  libqlib2nl.a  libqlib2nl.debug.a
+
+lib64:
+libqlib2.a  libqlib2.debug.a  libqlib2nl.a  libqlib2nl.debug.a
+
+If you link programs from this source directory, the Makefile in
+for these programs may need to be modified to look for the libraries
+in the subdir lib or lib64.
+
+2.  The Makefile now have a configurable section.  Look at it and modify it
+appropriately.  
+
+a.  Select where you want the library(s) to be installed.
+
+b.  LEAPSECONDS defines where the leapseconds file will be installed (if you
+run make install), and is also used when compiling the code to override the
+default location of the leapsecond file defined in qtime2.c.
+
+c.  If you want only 32-bit or 64-bit libraries, change the definition of
+the "all" target to include only all32 or all64.  On Linux, if you have
+a 32-bit compiler, you CANNOT build a 64-bit library.
+
+==============================================================================

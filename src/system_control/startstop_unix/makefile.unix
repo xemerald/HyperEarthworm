@@ -1,0 +1,37 @@
+#
+# Note: startstop executable must be suid root to set scheduling priorities.
+#	If this isn't wanted, or we're not root, comment out the chmod below.
+
+LINUX_FLAGS    = -lpthread
+SPECIFIC_FLAGS = $($(PLATFORM)_FLAGS)
+
+CFLAGS = $(GLOBALFLAGS)
+
+B = $(EW_HOME)/$(EW_VERSION)/bin
+L = $(EW_HOME)/$(EW_VERSION)/lib
+
+APP = startstop
+
+OBJS = $(APP).o
+
+EW_LIBS = \
+	$L/ew_nevent_message.o \
+	$L/lockfile.o \
+	$L/lockfile_ew.o \
+	$L/startstop_lib.o \
+	$L/startstop_unix_generic.o \
+	-L$L -lew_mt
+
+$B/$(APP): $(OBJS)
+	$(CC) -o $@ $(CFLAGS) $(OBJS) $(EW_LIBS) $(SPECIFIC_FLAGS)
+#	chmod u+s $B/$@
+
+
+# Clean-up rules
+clean: PHONY
+	-$(RM) a.out core *.o *.obj *% *~
+
+clean_bin: PHONY
+	-$(RM) $B/$(APP) $B/$(APP).exe
+
+PHONY:

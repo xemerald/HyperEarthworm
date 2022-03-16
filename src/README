@@ -1,0 +1,128 @@
+Welcome to Earthworm
+
+Before you try and compile Earthworm from this directory, you will
+need to set some environment variables as they are used by the
+Makefiles pre-built herein.
+
+Step 1:
+cd ../environment and find the shell/OS that matches your platform
+edit the environment file and then run or source the file so that
+your build environment is set.
+
+After your EW_HOME and EW_VERSION parameters, the most important env 
+var for compilation under Unix is GLOBALFLAGS.
+For Windows, there are Visual Studio .bat variable settings that must
+be sourced (see the ew_nt.cmd example).
+
+Step 2:
+run make or for windows nmake followed by your target OS:
+
+1. To build (compile) the entire Earthworm distribution on a Sun:
+        make unix
+
+1a. To compile the Earthworm distrib. on a Mac OS X, Linux, or other POSIX box:
+        make unix
+
+2. To build (compile) the entire Earthworm distribution on an NT PC:
+        nmake nt
+
+
+
+TROUBLESHOOTING:
+
+If you get the error:
+
+gnu/stubs-32.h: No such file or directory
+
+you are probably doing a 32 bit build on a 64 bit system. This is OK. Try:
+
+sudo yum install  glibc-devel.i686
+
+If you get the error:
+
+skipping incompatible /usr/lib/gcc/x86_64-redhat-linux/4.6.0/libgcc_s.so
+
+try:
+
+sudo yum install libgcc.i686
+
+If you get XDR errors such as:
+/opt/earthworm/earthworm_7.10/src/libsrc/util/ahputaway.c:372: undefined reference to `xdrstdio_create'
+
+you'll find XDR is no longer at /usr/include/rpc on RHEL 8
+
+libtirpc can be yum installed, 
+yum -y install ibtirpc libtirpc-devel
+
+add to ew_linux.bash  -ltirpc in CPPFLAGS
+for example:
+   export CPPFLAGS="-D_LINUX -Dlinux -D_INTEL -D_USE_SCHED -D_USE_PTHREADS -D_USE_TERMIOS -D_FILE_OFFSET_BITS=64 -ltirpc -I${EW_HOME}/${EW_VERSION}/include -I/usr/include"
+
+
+Need also to do:
+ln -s /usr/include/tirpc/rpc/auth_des.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/auth_gss.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/auth.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/auth_unix.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/clnt.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/clnt_soc.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/clnt_stat.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/des_crypt.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/des.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/key_prot.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/nettype.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/pmap_clnt.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/pmap_prot.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/pmap_rmt.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/raw.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpcb_clnt.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpcb_prot.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpcb_prot.x /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpc_com.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpcent.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpc.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpc_msg.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/rpcsec_gss.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/svc_auth_gss.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/svc_auth.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/svc_dg.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/svc.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/svc_mt.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/svc_soc.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/types.h /usr/include/rpc
+ln -s /usr/include/tirpc/rpc/xdr.h /usr/include/rpc
+ln -s /usr/include/tirpc/netconfig.h /usr/include/netconfig.h
+
+Ugly huh? I'm sure a solution will be available for this soon, but for now this is the unpleasant workaround that has to be done as the root user.
+
+_64 BIT COMPILES ON LINUX_
+
+Earthworm compiles in 64 bit mode and 32 bit mode. 64 bit mode is now the default, and should prove easier.
+
+_32 BIT COMPILES ON LINUX ON A 64 BIT MACHINE_
+
+Earthworm is able to compile in 32 bit mode. Earthworm doesn't have memory 
+requirements that take advantage 64 bit, but the latest 64 bit operating 
+systems don't come with libraries that support 32 bit automatically installed.
+
+Here are libraries you install in a Red Hat based system to support 32 bit:
+sudo yum install glibc-devel.i686 libgcc.i686 libstdc++-devel.i686
+
+For Ubuntu:
+sudo apt-get install libc6-dev-i386 gfortran-multilib 
+or if you get an errr above, try just 
+sudo apt-get install gfortran-multilib
+
+If you get errors installing any of these libraries, try installing them one 
+at at time instead of multiple on one command line
+
+_32 BIT MIXING WITH 64 BIT_
+
+You can run a 32 bit Earthworm on a 64 bit machine, but you can't run 32 bit 
+Earthworm Modules and 64 bit Earthworm modules connected to the same Startstop.
+If the Startstop is 64 bit, all modules connecting to its shared memory rings
+must be 64 bit. If the startstop is 32 bit, all modules connecting to its 
+memory rings must be 32 bit.
+
+Known compile issues:
+PsnAdSend will not compile on OSX

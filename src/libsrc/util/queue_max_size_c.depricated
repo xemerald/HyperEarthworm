@@ -1,0 +1,158 @@
+
+/*
+ *   THIS FILE IS UNDER RCS - DO NOT MODIFY UNLESS YOU HAVE
+ *   CHECKED IT OUT USING THE COMMAND CHECKOUT.
+ *
+ *    $Id: queue_max_size_c.depricated 10 2000-02-14 18:56:41Z lucky $
+ *
+ *    Revision history:
+ *     $Log$
+ *     Revision 1.1  2000/02/14 18:51:48  lucky
+ *     Initial revision
+ *
+ *
+ */
+
+/* Modified 5/24/96 by Alex: accept max number of total bytes we will allocate  */
+/* Modified 5/24/96 by Alex: include the message logo as element of list*/
+/* Modified 7/23/96 by Alex: circular buffering */
+/***********************************************************************
+ *                              queue.c                                *
+ *                                                                     *
+ *  Adapted from Kelley and Pohl, "A Book on C", 2'nd edition, p. 353  *
+ ***********************************************************************/
+#ifdef _OS2
+#define INCL_DOSMEMMGR
+#define INCL_DOSSEMAPHORES
+#include <os2.h>
+#endif
+
+#include <stdio.h>
+#include <string.h>
+#include <malloc.h>
+#include <earthworm.h>
+#include <transport.h>
+#include "queue_max_size.h"
+
+long MaxBytes;
+long UsedBytes;
+long NumElements;
+long MaxElements;
+
+int isempty( QUEUE q )
+{
+   return( q.front == (LINK)NULL );
+}
+
+
+DATA vfront( QUEUE q )
+{
+   return( q.front->d );
+}
+
+
+void initqueue( QUEUE *q, unsigned long maxElements, unsigned long elementMaxSize )
+{
+   q->front = q->rear = (LINK)NULL;
+   UsedBytes = 0;
+   MaxElements = (long)maxElements;
+   NumElements = 0;
+   MaxBytes = MaxElements * elementMaxSize; /* never allocate above this many */
+}
+
+/***********************************************************************
+ *                              dequeue                                *
+ *                                                                     *
+ *  Copies data at front of queue to memory pointed to by x.           *
+ *  Returns 0 if no error.                                             *
+ *  Returns -1 if the queue is empty.                                  *
+ ***********************************************************************/
+int dequeue( QUEUE *q, DATA x, long* size, MSG_LOGO* userLogoPtr )
+{
+   LINK  temp = q->front;
+
+   if ( isempty( *q ) )
+      return( -1 );
+
+   memcpy( x, temp->d, (size_t)(temp->length) );
+   UsedBytes=UsedBytes - temp->length ;
+   free( temp->d );
+   userLogoPtr->type   = temp->queueLogo.type;
+   userLogoPtr->mod    = temp->queueLogo.mod ;
+   userLogoPtr->instid = temp->queueLogo.instid;
+   *size               = temp->length;
+   q->front = temp->next;
+   UsedBytes=UsedBytes - sizeof(ELEMENT);
+   free( temp );
+   NumElements--; /* number of elements in list */
+   return( 0 );
+}
+
+
+/***********************************************************************
+ *                              enqueue                                *
+ *                                                                     *
+ *  Creates a new element at the rear of the queue.                    *
+ *  Copies string x to the new element.                                *
+ *  Returns 0 if no error.                                             *
+ *  Returns -1 if memory could not be allocated.                       *
+ *  Returns -2 internal error: were about to allocate beyond           *
+ *              requested limit                                        *
+ *  Returns -3 if we clobbered an unsent message (stepped on our tail) *
+ ***********************************************************************/
+int enqueue( QUEUE *q, DATA x, long size, MSG_LOGO userLogo )
+{
+   LINK temp;
+   LINK discard;
+   int ourRet;
+
+   ourRet=0 ; /* presume all will go well */
+
+   /* do it circular: if we're up to our limit of elements, discard the oldest */
+   if ( NumElements >= MaxElements )
+      {
+      discard = q->front;
+      UsedBytes=UsedBytes - discard->length ;
+      free( discard->d );
+      q->front = discard->next;
+      UsedBytes=UsedBytes - sizeof(ELEMENT);
+      free( discard );
+      NumElements--;
+      ourRet=-3;
+      }
+
+   /* will this element drive us over the limit? */
+   if ( (UsedBytes + (long)sizeof(ELEMENT) + size) >= MaxBytes)
+      return(-2);
+
+   temp = malloc( sizeof(ELEMENT) );
+   if ( temp == (LINK)NULL )
+      return( -1 );
+   else
+      UsedBytes=UsedBytes + sizeof(ELEMENT);
+
+   temp->d = (DATA) malloc( size );
+   if ( temp->d == (DATA)NULL )
+      {
+      free( temp );
+      return( -1 );
+      }
+   else
+      UsedBytes = UsedBytes + size;
+      NumElements++; /* number of elements in list */
+   memcpy( temp->d, x, size);
+   temp->queueLogo.type   = userLogo.type;
+   temp->queueLogo.mod    = userLogo.mod;
+   temp->queueLogo.instid = userLogo.instid;
+   temp->length = size;
+   temp->next = NULL;
+
+   if ( isempty( *q ) )
+      q->front = q->rear = temp;
+   else
+      {
+      q->rear->next = temp;
+      q->rear = temp;
+      }
+   return( ourRet );
+}

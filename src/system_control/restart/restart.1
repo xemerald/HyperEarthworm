@@ -1,0 +1,49 @@
+.TH restart 1 "22 May, 1998"
+.SH NAME
+restart \- Send an Earthworm restart message.
+.SH SYNOPSIS
+.B restart 
+[
+.I config_file
+]
+.I  pid
+.SH DESCRIPTION
+.B restart
+sends an Earthworm TYPE_RESTART message with the specified 
+.I pid
+to startstop, for manual restarting of individual modules.
+The
+.I pid
+can be obtained from the status message printed by
+.B status
+or
+.BR startstop .
+The optional
+.I config_file
+may be specified to match the config file used by 
+.BR startstop .
+If no
+.I config_file
+is specified,
+.B restart
+will use the same default config file that is built into
+.BR startstop .
+.SH NOTE
+In all cases, the config file must be located in the directory to which the
+environment variable
+.B EW_PARAMS
+is pointed.
+.SH "SEE ALSO"
+.nf
+.BR startstop (n)
+.BR restart (n)
+.fi
+.SH AUTHOR
+.nf
+Pete Lombard
+
+Earthworm provided by Alex Bittenbinder, Barbara Bogaert, 
+Lynn Dietz, and Will Kohler of the US Geological Survey,
+Menlo Park, California
+
+.fi
