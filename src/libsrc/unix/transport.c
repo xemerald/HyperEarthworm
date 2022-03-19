@@ -80,13 +80,17 @@ static sem_t get_semaphore( const long );
 static int   create_semaphore( const long );
 static int   get_semaphore( const long );
 #endif
+static MSG_TRACK *search_track_in_list( MSG_TRACK [], long *, const long, const MSG_TRACK * );
+static void search_logo_in_track_list( MSG_TRACK *, long *, const MSG_LOGO *, const long, const long );
+static RING_INDEX_T find_latest_keyget(
+	SHM_HEAD *, MSG_TRACK [], const long, const MSG_LOGO [], const long, const long, RING_INDEX_T *
+);
+/* */
 static int  move_keyold_2_nextmsg( SHM_HEAD * );
-static RING_INDEX_T reset_track_keyout( MSG_TRACK *, SHM_HEAD *, const RING_INDEX_T, const RING_INDEX_T );
-static RING_INDEX_T fetch_max_keyget( MSG_TRACK *, long, MSG_LOGO *, int, long, RING_INDEX_T );
 static long copy_msg_2_shm( SHM_HEAD *, long, const uint8_t *, const size_t );
-static long copy_shmmsg_2_buf( SHM_HEAD *, long, uint8_t *, const size_t );
+static long copy_shmmsg_2_buf( const SHM_HEAD *, long, uint8_t *, const size_t );
 static void reset_key_shm( SHM_HEAD * );
-static int  track_getmsg_seq( const MSG_TRACK *, MSG_TRACK *, int *, int );
+static int  track_getmsg_seq( const MSG_TRACK *, MSG_TRACK [], int *, int );
 static int  compare_msg_track( const void *, const void * );
 static int  compare_msg_track_wildlogo( const void *, const void * );
 
@@ -209,15 +213,15 @@ void tport_detach( SHM_INFO *region )
  */
 int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 {
-	static volatile MSG_TRACK trak[NTRACK_PUT] = { { 0 } };  /* sequence number keeper   */
+	static volatile MSG_TRACK trak[NTRACK_PUT] = { { 0, { 0 }, 0, 0, 0 } };  /* sequence number keeper   */
 	static volatile int       ntrak = 0;                     /* # of logos seen so far   */
 #ifndef _USE_POSIX_SHM
 	struct sembuf sops;                  /* semaphore operations; changed to non-static 980424:ldd */
 	int           tries_left;
 	int           res;
 #endif
-	TPORT_HEAD hd;                       /* transport layer header to put       */
-	MSG_TRACK  trak_in  = { 0 };         /* transport layer header to put       */
+	TPORT_HEAD thead;                    /* transport layer header to put       */
+	MSG_TRACK  trak_in;                  /* transport layer header to put       */
 	MSG_TRACK *trak_ptr = NULL;          /* transport layer header to put       */
 	SHM_HEAD  *shm      = region->addr;  /* pointer to start of memory region   */
 	long       ring_pos = 0;             /* transport layer header to put       */
@@ -249,27 +253,20 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 #endif
 
 /* Next, find incoming logo in list of combinations already seen */
+	memset(&trak_in, 0, sizeof(MSG_TRACK));
 	trak_in.memkey = region->key;
 	trak_in.logo   = *putlogo;
-	for ( j = 0, trak_ptr = trak; j < ntrak; j++, trak_ptr++ ) {
-		if ( !COMPARE_MSG_TRACK( trak_ptr, &trak_in ) )
-			break;
-	}
-
-	if ( j >= ntrak ) {
-	/* Incoming logo is a new combination; store it, if there's room */
-		if ( ntrak == NTRACK_PUT ) {
-			fprintf(stdout, "ERROR: tport_putmsg; exceeded NTRACK_PUT, msg not sent\n");
-			return PUT_NOTRACK;
-		}
-		*trak_ptr = trak_in;
-		ntrak++;
+	trak_ptr = search_track_in_list( trak, &ntrak, NTRACK_PUT, &trak_in );
+/* */
+	if ( !trak_ptr ) {
+		fprintf(stdout, "ERROR: tport_putmsg; exceeded NTRACK_PUT, msg not sent\n");
+		return PUT_NOTRACK;
 	}
 /* Store everything you need in the transport header */
-	hd.start = FIRST_BYTE;
-	hd.size  = length;
-	hd.logo  = trak_ptr->logo;
-	hd.seq   = trak_ptr->seq++;
+	thead.start = FIRST_BYTE;
+	thead.size  = length;
+	thead.logo  = trak_ptr->logo;
+	thead.seq   = trak_ptr->seq++;
 
 /* In shared memory, see if keyin will wrap; if so, reset keyin and keyold */
 	if ( (RING_INDEX_T)(shm->keyin + size_tporth + length) < shm->keyold ) {
@@ -291,7 +288,7 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 	}
 
 /* Now copy transport header into shared memory by chunks... */
-	ring_pos = copy_msg_2_shm( shm, shm->keyin % shm->keymax, &hd, size_tporth );
+	ring_pos = copy_msg_2_shm( shm, shm->keyin % shm->keymax, &thead, size_tporth );
 /* ...and copy message into shared memory by chunks */
 	ring_pos = copy_msg_2_shm( shm, ring_pos, msg, length );
 /* */
@@ -325,59 +322,31 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 int tport_getmsg(
 	SHM_INFO *region, MSG_LOGO *getlogo, short nget, MSG_LOGO *logo, long *length, char *msg, long maxsize
 ) {
-	static MSG_TRACK trak[NTRACK_GET] = { { 0 } }; /* sequence #, outpointer keeper     */
-	static int       ntrak = 0;                    /* # modid,type,instid combos so far */
+	static MSG_TRACK trak[NTRACK_GET] = { { 0, { 0 }, 0, 0, 0 } };  /* sequence #, outpointer keeper     */
+	static int       ntrak = 0;                                     /* # modid,type,instid combos so far */
 /* */
-	MSG_TRACK        trak_in  = { 0 };                 /* sequence #, outpointer keeper     */
-	MSG_TRACK       *trak_ptr = NULL;                  /* transport layer header to put       */
-	SHM_HEAD        *shm      = region->addr;          /* pointer to start of memory region */
-	uint8_t         *ring     = (uint8_t *)(shm + 1);  /* pointer to ring part of memory    */
-	long             ir;                           /* index into the ring               */
-	TPORT_HEAD       hd;                           /* transport header from memory      */
-	uint8_t         *h = (uint8_t *)&hd;           /* pointer to transport layer header */
-	int              ih;                           /* index into the transport header   */
-	RING_INDEX_T     keyin;                        /* in-pointer to shared memory       */
-	RING_INDEX_T     keyold;                       /* oldest complete message in memory */
-	RING_INDEX_T     keyget;                       /* pointer at which to start search  */
-	int              status = GET_NONE;            /* how did retrieval go?             */
-	int              i, j;
+	const SHM_HEAD      *shm      = region->addr;          /* pointer to start of memory region */
+	const uint8_t       *ring_p   = (uint8_t *)(shm + 1);  /* pointer to ring part of memory    */
+	const uint8_t const *ring_end = ring_p + shm->keymax;  /* pointer to the end of ring        */
+	TPORT_HEAD           thead;                            /* transport header from memory      */
+	uint8_t             *th_p;                             /* pointer to transport layer header */
+	MSG_TRACK            trak_in  = { 0 };                 /* sequence #, outpointer keeper     */
+	RING_INDEX_T         keyin;                            /* in-pointer to shared memory       */
+	RING_INDEX_T         keyold;                           /* oldest complete message in memory */
+	RING_INDEX_T         keyget;                           /* pointer at which to start search  */
+	int                  status = GET_NONE;                /* how did retrieval go?             */
+	int                  i;
 
 /* Make sure all requested logos are entered in tracking list */
-	for ( j = 0; j < nget; j++ ) {
-	/* */
-		trak_in.memkey = region->key;
-		trak_in.logo   = getlogo[j];
-	/* for all logos we're tracking */
-		trak_ptr = (MSG_TRACK *)bsearch(&trak_in, trak, ntrak, sizeof(MSG_TRACK), compare_msg_track);
-		if ( !trak_ptr ) {
-		/* Make an entry in trak for this logo; if there's room */
-			if ( ntrak < NTRACK_GET ) {
-				trak[ntrak++] = trak_in;
-				qsort(trak, ntrak, sizeof(MSG_TRACK), compare_msg_track);
-			}
-		}
+	memset(&trak_in, 0, sizeof(MSG_TRACK));
+	trak_in.memkey = memkey;
+/* for all logos we're tracking */
+	for ( i = 0; i < nget; i++ ) {
+		trak_in.logo = getlogo[i];
+		search_track_in_list( trak, &ntrak, NTRACK_GET, &trak_in );
 	}
-
-/* Find latest starting index to look for any of the requested logos */
-	do {
-	/*  */
-		keyget = fetch_max_keyget( trak, ntrak, getlogo, nget, region->key, shm->keyold );
-		keyin  = shm->keyin;
-	/*
-	 * See if keyin and keyold were wrapped and reset by tport_putmsg;
-	 * If so, reset trak[xx].keyout and go back to findkey
-	 */
-		if ( keyget > keyin ) {
-			keyold = shm->keyold;
-			for ( i = 0, trak_ptr = trak; i < ntrak; i++, trak_ptr++ ) {
-				if ( trak_ptr->memkey == region->key )
-					reset_track_keyout( trak_ptr, shm, keyold, keyin );
-			}
-			/*
-			 * fprintf(stdout, "NOTICE: tport_getmsg; keyin wrapped, keyout(s) reset; Region %ld\n", region->key);
-			 */
-		}
-	} while ( keyget > keyin );
+/* Find latest starting index and in-index to look for any of the requested logos */
+	keyget = find_latest_keyget( shm, trak, ntrak, getlogo, nget, region->key, &keyin );
 
 /* Find next message from requested type, module, instid */
 	while ( keyget < keyin ) {
@@ -385,41 +354,40 @@ int tport_getmsg(
 		if ( keyget < shm->keyold )
 			keyget = shm->keyold;
 	/* Load next header; make sure you weren't lapped */
-		ir = keyget % shm->keymax;
-		for ( ih = 0; ih < sizeof(TPORT_HEAD); ih++ ) {
-			if ( ir >= shm->keymax )
-				ir -= shm->keymax;
-			h[ih] = ring[ir++];
+		ring_p = (uint8_t *)(shm + 1) + (keyget % shm->keymax);
+		th_p   = (uint8_t *)&thead;
+		for ( i = 0; i < sizeof(TPORT_HEAD); i++, th_p++, ring_p++ ) {
+			if ( ring_p >= ring_end )
+				ring_p = (uint8_t *)(shm + 1);
+			*th_p = *ring_p;
 		}
 	/* added 960612:ldd */
 		if ( keyget < shm->keyold )
 			continue;
 
 	/* Make sure it starts at beginning of a header */
-		if ( hd.start != FIRST_BYTE ) {
+		if ( thead.start != FIRST_BYTE ) {
 			fprintf(stdout, "ERROR: tport_getmsg; keyget not at FIRST_BYTE, Region %ld\n", region->key);
 			exit(1);
 		}
 
-		keyget += sizeof(TPORT_HEAD) + hd.size;
+		keyget += sizeof(TPORT_HEAD) + thead.size;
 	/* See if this msg matches any requested type */
-		for ( j = 0; j < nget; j++ ) {
-			if ( !COMPARE_MSG_LOGO( getlogo + j, &hd.logo ) )
+		for ( i = 0; i < nget; i++ ) {
+			if ( !COMPARE_MSG_LOGO( getlogo + i, &thead.logo ) )
 				break;
 		}
 	/* A hole to the next msg for those are not matching */
-		if ( j >= nget )
+		if ( i >= nget )
 			continue;
 	/* Found a message of requested logo; retrieve it! */
-		if ( (msg != NULL) && (hd.size > maxsize) ) {
+		if ( msg != NULL && thead.size > maxsize ) {
 		/* Complain if retreived msg is too big */
-			*logo   = hd.logo;
-			*length = hd.size;
-			status  = GET_TOOBIG;
+			status = GET_TOOBIG;
 		}
 		else {
 		/* Copy message by chunks to caller's address */
-			copy_shmmsg_2_buf( shm, ir, msg, hd.size );
+			copy_shmmsg_2_buf( shm, ir, msg, thead.size );
 		/* See if we got run over by tport_putmsg while copying msg */
 		/* if we did, go back and try to get a msg cleanly          */
 			keyold = shm->keyold;
@@ -427,62 +395,52 @@ int tport_getmsg(
 				keyget = keyold;
 				continue;
 			}
-		/* Set other returned variables */
-			*logo   = hd.logo;
-			*length = hd.size;
 		}
+	/* Set other returned variables */
+		*logo   = thead.logo;
+		*length = thead.size;
 	/* */
+		memset(&trak_in, 0, sizeof(MSG_TRACK));
 		trak_in.memkey = region->key;
-		trak_in.logo   = hd.logo;
-		trak_in.seq    = hd.seq;
+		trak_in.logo   = thead.logo;
+		trak_in.seq    = thead.seq;
 		status = track_getmsg_seq( &trak_in, trak, &ntrak, status );
-	/* If you got here, that means we got a message we want so leave the loop */
+	/* If you got here, that means we got a message we want so just leave the loop */
 		break;
 	} /* end while over ring */
 
-/**** update outpointer (->msg after retrieved one) for all requested logos ****/
-
-wrapup:
-/* For all message logos we're tracking */
-	for ( i = 0, trak_ptr = trak; i < ntrak; i++, trak_ptr++ ) {
-		if ( trak_ptr->memkey == region->key ) {
-		/* For all requested message logos */
-			for ( j = 0; j < nget; j++ ) {
-				if ( !COMPARE_MSG_LOGO( getlogo + j, &trak_ptr->logo ) ) {
-					trak_ptr->keyout = keyget;
-				}
-			}
-		}
-	}
+/* Update outpointer (->msg after retrieved one) for all requested logos */
+	update_track_list_keyout( trak, ntrak, getlogo, nget, memkey, keyget );
 
 	return status;
 }
 
+/*
+ * tport_flush() - Flush messages out of shared memory.
+ * Arguments:
+ *   info structure for memory region
+ *   requested logo(s)
+ *   number of logos in getlogo
+ *   logo of retrieved msg
+ */
 
-/*********************** function tport_flush ************************/
-/*                 Flush messages out of shared memory.              */
-/*********************************************************************/
-
-int tport_flush( SHM_INFO  *region,   /* info structure for memory region  */
-		  MSG_LOGO  *getlogo,  /* requested logo(s)                 */
-		  short      nget,     /* number of logos in getlogo        */
-		  MSG_LOGO  *logo )     /* logo of retrieved msg 	    */
+int tport_flush( SHM_INFO *region, MSG_LOGO *getlogo, short nget, MSG_LOGO *logo )
 {
-	int res;
+	int  res;
 	long length;
 
-	do{
+	do {
 		res = tport_getmsg( region, getlogo, nget, logo, &length, NULL, 0 );
-	} while (res !=GET_NONE);
+	} while ( res != GET_NONE );
+
 	return res;
 }
 
 
 
-/*********************** function tport_doFlagOp *********************/
-/*                  Perform operation op on the flag                 */
-/*********************************************************************/
-
+/*
+ * tport_doFlagOp() - Perform operation op on the flag
+ */
 static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
 {
    int i;
@@ -490,8 +448,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
    int start, stop;
    int		 ret_val = 0;
 #ifndef _USE_POSIX_SHM
-   struct sembuf     sops;             /* semaphore operations;
-                                             changed to non-static 980424:ldd */
+   struct sembuf sops;             /* semaphore operations; changed to non-static 980424:ldd */
    int res;
 #ifdef _MACOSX
    int triesLeft;
@@ -502,7 +459,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
 
    if ( Flag_Init )
    	  tport_createFlag();
-   smf = (SHM_FLAG*)smf_region.addr;
+   smf = (SHM_FLAG *)smf_region.addr;
    if ( smf == NULL )
    	  return 0;
 
@@ -521,6 +478,7 @@ static int tport_doFlagOp( SHM_INFO* region, int pid, int op )
       triesLeft--;
    }
 #else
+/* This part is indeed a bottle neck for highthrough system */
     timeout.tv_sec = 2;
     timeout.tv_nsec = 0;
     res = semtimedop( smf_region.sid, &sops, 1, &timeout );
@@ -1521,74 +1479,78 @@ static int move_keyold_2_nextmsg( SHM_HEAD *shm )
 /*
  *
  */
-static RING_INDEX_T reset_track_keyout(
-	MSG_TRACK *trak_ptr, SHM_HEAD *shm, const RING_INDEX_T keyold, const RING_INDEX_T keyin
-) {
-	TPORT_HEAD *thead;  /* temp pointer into shared memory   */
-/* DEBUG */
-	/* printf("tport_getmsg: Pre-reset: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, keyin); */
-/* Reset keyout */
-	trak_ptr->keyout %= shm->keymax;
-/* DEBUG */
-	/* printf("tport_getmsg: Intermed: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, keyin); */
-/*
- * Make sure new keyout points to keyin or to a msg's first-byte;
- * if not, we've been lapped, so set keyout to keyold
- */
-	thead = (TPORT_HEAD *)((uint8_t *)(shm + 1) + trak_ptr->keyout);
-	if ( trak_ptr->keyout == keyin || ((keyin - trak_ptr->keyout) % shm->keymax) == 0 ) {
-	/* DEBUG */
-		/* printf("tport_getmsg: Intermed: keyout=%10u same as keyin\n", trak_ptr->keyout); */
-		trak_ptr->keyout = keyin;
-	}
-	else if ( thead->start != FIRST_BYTE ) {
-	/* DEBUG */
-		/* printf("tport_getmsg: Intermed: keyout=%10u does not point to FIRST_BYTE\n", trak_ptr->keyout); */
-		trak_ptr->keyout = keyold;
-	}
-/* Else, make sure keyout's value is between keyold and keyin */
-	else if ( trak_ptr->keyout < keyold ) {
-		do {
-			trak_ptr->keyout += shm->keymax;
-		} while ( trak_ptr->keyout < keyold );
-	}
-/* DEBUG */
-	/* printf("tport_getmsg: Reset: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, keyin); */
-
-	return trak_ptr->keyout;
-}
-
-/*
- *
- */
 static RING_INDEX_T find_latest_keyget(
-	MSG_TRACK *trak_list, long ntrak, MSG_LOGO *getlogo, int nget, long memkey
+	const SHM_HEAD *shm, MSG_TRACK trak_list[], const long ntrak,
+	const MSG_LOGO getlogo[], const long nget, const long memkey,
+	RING_INDEX_T *keyin
 ) {
-	RING_INDEX_T result;
-	RING_INDEX_T keyin;
-	RING_INDEX_T keyold;
-	MSG_TRACK *trak_ptr;
+	RING_INDEX_T result;    /* pointer at which to start search  */
+	RING_INDEX_T keyold;    /* oldest complete message in memory */
+	MSG_TRACK   *trak_ptr;  /* pointer to outpointer keeper      */
+	TPORT_HEAD  *thead;     /* temp pointer into shared memory   */
+	int          i, j;
 
 /* Find latest starting index to look for any of the requested logos */
 	do {
 	/*  */
-		result = fetch_max_keyget( trak_list, ntrak, getlogo, nget, memkey, shm->keyold );
-		keyin  = shm->keyin;
+		result = shm->keyold;
+	/* For all message logos we're tracking */
+		for ( i = 0, trak_ptr = trak_list; i < ntrak; i++, trak_ptr++ ) {
+			if ( trak_ptr->memkey == memkey ) {
+			/* For all requested message logos */
+				for ( j = 0; j < nget; j++ ) {
+					if ( !COMPARE_MSG_LOGO( getlogo + j, &trak_ptr->logo ) ) {
+						if ( trak_ptr->keyout > result )
+							result = trak_ptr->keyout;
+					}
+				}
+			}
+		}
+		*keyin = shm->keyin;
 	/*
-	 * See if keyin and keyold were wrapped and reset by tport_putmsg;
-	 * If so, reset trak[xx].keyout and go back to findkey
+	 * See if keyin and keyold were wrapped and reset by putting msg process;
+	 * If so, reset trak[xx].keyout and go back to the beginning of loop.
 	 */
-		if ( result > keyin ) {
+		if ( result > *keyin ) {
 			keyold = shm->keyold;
 			for ( i = 0, trak_ptr = trak_list; i < ntrak; i++, trak_ptr++ ) {
-				if ( trak_ptr->memkey == memkey )
-					reset_track_keyout( trak_list, shm, keyold, keyin );
+				if ( trak_ptr->memkey == memkey ) {
+				/* DEBUG */
+					/* printf("tport_getmsg: Pre-reset: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, *keyin); */
+				/* Reset keyout */
+					trak_ptr->keyout %= shm->keymax;
+				/* DEBUG */
+					/* printf("tport_getmsg: Intermed: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, *keyin); */
+				/*
+				 * Make sure new keyout points to keyin or to a msg's first-byte;
+				 * if not, we've been lapped, so set keyout to keyold
+				 */
+					thead = (TPORT_HEAD *)((uint8_t *)(shm + 1) + trak_ptr->keyout);
+					if ( trak_ptr->keyout == *keyin || ((*keyin - trak_ptr->keyout) % shm->keymax) == 0 ) {
+					/* DEBUG */
+						/* printf("tport_getmsg: Intermed: keyout=%10u same as keyin\n", trak_ptr->keyout); */
+						trak_ptr->keyout = *keyin;
+					}
+					else if ( thead->start != FIRST_BYTE ) {
+					/* DEBUG */
+						/* printf("tport_getmsg: Intermed: keyout=%10u does not point to FIRST_BYTE\n", trak_ptr->keyout); */
+						trak_ptr->keyout = keyold;
+					}
+				/* Else, make sure keyout's value is between keyold and keyin */
+					else if ( trak_ptr->keyout < keyold ) {
+						do {
+							trak_ptr->keyout += shm->keymax;
+						} while ( trak_ptr->keyout < keyold );
+					}
+				/* DEBUG */
+					/* printf("tport_getmsg: Reset: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, *keyin); */
+				}
 			}
 			/*
 			 * fprintf(stdout, "NOTICE: tport_getmsg; keyin wrapped, keyout(s) reset; Region %ld\n", region->key);
 			 */
 		}
-	} while ( result > keyin );
+	} while ( result > *keyin );
 
 	return result;
 }
@@ -1596,25 +1558,51 @@ static RING_INDEX_T find_latest_keyget(
 /*
  *
  */
-static RING_INDEX_T fetch_max_keyget(
-	MSG_TRACK *trak_list, long ntrak, MSG_LOGO *getlogo, int nget, long memkey, RING_INDEX_T keyget
+static MSG_TRACK *search_track_in_list(
+	MSG_TRACK trak_list[], long *ntrak, const long max_ntrak, const MSG_TRACK *track_in
 ) {
-	int i, j;
+	MSG_TRACK   *result = NULL;
+	const size_t size_msg_trak = sizeof(MSG_TRACK);
+
+/* */
+	result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
+	if ( !result ) {
+	/* Make an entry in trak for this logo; if there's room */
+		if ( ntrak < max_ntrak ) {
+			trak_list[*ntrak] = *trak_in;
+			(*ntrak)++;
+			qsort(trak, *ntrak, size_msg_trak, compare_msg_track);
+		/* Search again to return the new pointer of this input track inside the list */
+			result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
+		}
+	}
+
+	return result;
+}
+
+/*
+ *
+ */
+static void update_track_list_keyout(
+	MSG_TRACK trak_list[], const long ntrak, const MSG_LOGO getlogo[], const long nget,
+	const long memkey, const RING_INDEX_T keyget
+) {
+	MSG_TRACK *trak_ptr;
+	int        i, j;
 
 /* For all message logos we're tracking */
-	for ( i = 0; i < ntrak; i++, trak_list++ ) {
-		if ( trak_list->memkey == memkey ) {
+	for ( i = 0, trak_ptr = trak_list; i < ntrak; i++, trak_ptr++ ) {
+		if ( trak_ptr->memkey == memkey ) {
 		/* For all requested message logos */
 			for ( j = 0; j < nget; j++ ) {
-				if ( !COMPARE_MSG_LOGO( getlogo + j, &trak_list->logo ) ) {
-					if ( trak_list->keyout > keyget )
-						keyget = trak_list->keyout;
+				if ( !COMPARE_MSG_LOGO( getlogo + j, &trak_ptr->logo ) ) {
+					trak_ptr->keyout = keyget;
 				}
 			}
 		}
 	}
 
-	return keyget;
+	return;
 }
 
 /*
@@ -1642,20 +1630,21 @@ static long copy_msg_2_shm( SHM_HEAD *shm, long ring_pos, const uint8_t *msg, co
 /*
  *
  */
-static long copy_shmmsg_2_buf( SHM_HEAD *shm, long ring_pos, uint8_t *msg, const size_t size )
-{
+static long copy_shmmsg_2_buf(
+	const SHM_HEAD *shm, long ring_pos, uint8_t *buf, const size_t size
+) {
 	uint8_t *ring_p = (uint8_t *)(shm + 1) + ring_pos;  /* pointer to ring part of memory */
 	size_t   rspace = shm->keymax - ring_pos;
 
 /* Copy message by chunks to caller's address */
 	if ( size <= rspace ) {
-		memcpy(msg, ring_p, size);
+		memcpy(buf, ring_p, size);
 		ring_pos += size;
 	}
 	else {
-		memcpy(msg, ring_p, rspace);
+		memcpy(buf, ring_p, rspace);
 		ring_pos = size - rspace;
-		memcpy(msg + rspace, shm + 1, ring_pos);
+		memcpy(buf + rspace, shm + 1, ring_pos);
 	}
 
 	return ring_pos;
@@ -1665,43 +1654,32 @@ static long copy_shmmsg_2_buf( SHM_HEAD *shm, long ring_pos, uint8_t *msg, const
  *
  */
 static int track_getmsg_seq(
-	const MSG_TRACK *trak_in, MSG_TRACK *trak_list, int *ntrak, int status
+	const MSG_TRACK *trak_in, MSG_TRACK trak_list[], int *ntrak, int status
 ) {
-/* Find msg logo in tracked list */
-	MSG_TRACK *trak_ptr =
-		(MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, sizeof(MSG_TRACK), compare_msg_track);
+	MSG_TRACK *trak_ptr = NULL;
 
-/* New logo, track it if there's room */
+/* Find msg logo in tracked list */
+	trak_ptr = search_track_in_list( trak_list, ntrak, NTRACK_GET, trak_in );
 	if ( !trak_ptr ) {
-		if ( *ntrak == NTRACK_GET ) {
-			if ( status != GET_TOOBIG )
-				status = GET_NOTRACK;
-		}
-		else {
-		/* */
-			trak_list[*ntrak]        = *trak_in;
-			trak_list[*ntrak].seq   += 1;
-			trak_list[*ntrak].active = 1; /* 960618:ldd */
-			(*ntrak)++;
-			qsort(trak_list, *ntrak, sizeof(MSG_TRACK), compare_msg_track);
-			status = GET_OK;
-		}
+		status = status != GET_TOOBIG ? GET_NOTRACK : status;
 	}
-	else if ( !trak_ptr->active ) {
-	/* Activate sequence tracking if 1st msg */
-		trak_ptr->seq    = trak_in->seq + 1;
-		trak_ptr->active = 1;
-		status = GET_OK;
-	}
-	else if ( status != GET_TOOBIG ) {
-	/* Check if sequence #'s match; update sequence # */
-		if ( trak_ptr->seq != trak_in->seq ) {
-			trak_ptr->seq = trak_in->seq + 1;
-			status = GET_MISS;
+	else {
+		if ( !trak_ptr->active ) {
+		/* Activate sequence tracking if 1st msg */
+			trak_ptr->seq    = trak_in->seq;
+			trak_ptr->active = 1;
 		}
-		else {
+	/* */
+		if ( status != GET_TOOBIG ) {
+		/* Check if sequence #'s match; update sequence # */
+			if ( trak_ptr->seq != trak_in->seq ) {
+				trak_ptr->seq = trak_in->seq;
+				status = GET_MISS;
+			}
+			else {
+				status = GET_OK;
+			}
 			trak_ptr->seq++;
-			status = GET_OK;
 		}
 	}
 
