@@ -13,7 +13,9 @@
 
 #ifndef TRANSPORT_H
 #define TRANSPORT_H
-
+#ifdef _USE_POSIX_SHM
+#include <semaphore.h>
+#endif
 #include <platform.h>
 /*#include <startstop_lib.h>*/
 #define MAX_NEWTPROC 255 /* maximum number of processes recorded using new transport */
