@@ -377,36 +377,36 @@ int tport_getmsg(
 			if ( !COMPARE_MSG_LOGO( getlogo + i, &thead.logo ) )
 				break;
 		}
-	/* A hole to the next msg for those are not matching */
-		if ( i >= nget )
-			continue;
-	/* Found a message of requested logo; retrieve it! */
-		if ( msg != NULL && thead.size > maxsize ) {
-		/* Complain if retreived msg is too big */
-			status = GET_TOOBIG;
-		}
-		else {
-		/* Copy message by chunks to caller's address */
-			copy_shmmsg_2_buf( shm, ir, msg, thead.size );
-		/* See if we got run over by tport_putmsg while copying msg */
-		/* if we did, go back and try to get a msg cleanly          */
-			keyold = shm->keyold;
-			if ( keyold >= keyget ) {
-				keyget = keyold;
-				continue;
-			}
-		}
-	/* Set other returned variables */
-		*logo   = thead.logo;
-		*length = thead.size;
 	/* */
-		memset(&trak_in, 0, sizeof(MSG_TRACK));
-		trak_in.memkey = region->key;
-		trak_in.logo   = thead.logo;
-		trak_in.seq    = thead.seq;
-		status = track_getmsg_seq( &trak_in, trak, &ntrak, status );
-	/* If you got here, that means we got a message we want so just leave the loop */
-		break;
+		if ( i < nget ) {
+		/* Found a message of requested logo; retrieve it! */
+			if ( msg != NULL && thead.size > maxsize ) {
+			/* Complain if retreived msg is too big */
+				status = GET_TOOBIG;
+			}
+			else {
+			/* Copy message by chunks to caller's address */
+				copy_shmmsg_2_buf( shm, ir, msg, thead.size );
+			/* See if we got run over by tport_putmsg while copying msg */
+			/* if we did, go back and try to get a msg cleanly          */
+				keyold = shm->keyold;
+				if ( keyold >= keyget ) {
+					keyget = keyold;
+					continue;
+				}
+			}
+		/* Set other returned variables */
+			*logo   = thead.logo;
+			*length = thead.size;
+		/* */
+			memset(&trak_in, 0, sizeof(MSG_TRACK));
+			trak_in.memkey = region->key;
+			trak_in.logo   = thead.logo;
+			trak_in.seq    = thead.seq;
+			status = track_getmsg_seq( &trak_in, trak, &ntrak, status );
+		/* If you got here, that means we got a message we want so just leave the loop */
+			break;
+		}
 	} /* end while over ring */
 
 /* Update outpointer (->msg after retrieved one) for all requested logos */
