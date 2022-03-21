@@ -1,4 +1,4 @@
-LINUX_FLAGS    = -lm -lpthread
+LINUX_FLAGS    = -lm -lpthread -lrt
 SPECIFIC_FLAGS = $($(PLATFORM)_FLAGS)
 
 CFLAGS = $(GLOBALFLAGS)
@@ -10,7 +10,7 @@ APP = gaplist
 
 OBJS = \
 	$(APP).o \
-	config.o 
+	config.o
 
 EW_LIBS = \
 	$L/swap.o \

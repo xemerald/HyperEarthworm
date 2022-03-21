@@ -45,8 +45,6 @@
 #include "platform.h"
 #include "transport.h"
 
-static short Get_Init=1;           /* initialization flag */
-
 static short Copyfrom_Init=1;      /* initialization flag */
 static short Flag_Init=1;          /* initialization flag */
 /* */

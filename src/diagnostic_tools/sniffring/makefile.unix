@@ -1,4 +1,4 @@
-LINUX_FLAGS    = -lpthread
+LINUX_FLAGS    = -lpthread -lrt
 SPECIFIC_FLAGS = $($(PLATFORM)_FLAGS)
 
 CFLAGS = $(GLOBALFLAGS)

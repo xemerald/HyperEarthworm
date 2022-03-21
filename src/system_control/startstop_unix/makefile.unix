@@ -2,7 +2,7 @@
 # Note: startstop executable must be suid root to set scheduling priorities.
 #	If this isn't wanted, or we're not root, comment out the chmod below.
 
-LINUX_FLAGS    = -lpthread
+LINUX_FLAGS    = -lpthread -lrt
 SPECIFIC_FLAGS = $($(PLATFORM)_FLAGS)
 
 CFLAGS = $(GLOBALFLAGS)
