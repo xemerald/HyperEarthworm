@@ -1794,13 +1794,13 @@ static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long me
 	if ( (*regid = shm_open(key_2_path( memkey, 1 ), O_RDONLY, 0)) != -1 ) {
 		if ( close(*regid) == -1 )
 			tport_syserr( "tport_create close", memkey );
-		if ( shm_unlink(key_2_path( memkey,1 )) == -1 )
+		if ( shm_unlink(key_2_path( memkey, 1 )) == -1 )
 			tport_syserr( "tport_create shm_unlink", memkey );
 	}
 /* Temporarily clear any existing file creation mask */
 	omask = umask(0);
 /* Connect and map shared memory region */
-	flags = O_CREAT | O_RDWR | O_EXCL;
+	flags = O_CREAT | O_RDWR;
 	if ( (*regid = shm_open(key_2_path( memkey, 1 ), flags, SHM_DEFAULT_MASK)) == -1 )
 		tport_syserr( "tport_create shm_open", memkey );
 	ftruncate(*regid, nbytes);
