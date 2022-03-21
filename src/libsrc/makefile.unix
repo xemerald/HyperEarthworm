@@ -3,10 +3,7 @@
 L = $(EW_HOME)/$(EW_VERSION)/lib
 
 COMMON_MODULES   = \
-	libcrypto \
-	libdali \
-	qlib2_${EW_BITS} \
-	util \
+	util
 
 LINUX_MODULES    = unix
 SPECIFIC_MODULES = $(COMMON_MODULES) $($(PLATFORM)_MODULES)
@@ -39,76 +36,12 @@ LIBEW_MT_MODULES = \
 all:	$(SPECIFIC_MODULES) \
 	libew_mt
 
-libcrypto \
-libgd \
 unix \
 util: PHONY
 	@cd $@ && \
 		echo ---------- ; \
 		echo Making $@ in: `pwd` ; \
 		$(MAKE) -f makefile.unix
-
-libdali: \
-	libdali/lib \
-	$L/libdali.a
-
-libdali/lib: PHONY
-	@cd libdali && \
-		echo ---------- ; \
-		echo Making libdali in: `pwd` ; \
-		$(MAKE)
-
-$L/libdali.a: libdali/libdali.a
-		cp libdali/libdali.a $L/
-
-#
-# Override the macro definitions in the qlib2 Makefile that we provide
-#
-
-QLIB_32_BITS =
-QLIB_64_BITS = 64
-QLIB_BITS    = $(QLIB_$(EW_BITS)_BITS)
-
-qlib2_32:: \
-	qlib2/lib32
-
-qlib2_64:: \
-	qlib2/lib64
-
-qlib2_32 \
-qlib2_64:: \
-	qlib2/lib_ew \
-	qlib2/lib_ew/libqlib2.a \
-	qlib2/lib_ew/libqlib2.debug.a \
-	qlib2/lib_ew/libqlib2nl.a \
-	qlib2/lib_ew/libqlib2nl.debug.a
-
-qlib2/lib32: PHONY
-	@cd qlib2 && \
-		echo ---------- ; \
-		echo Making qlib2 in: `pwd` ; \
-		$(MAKE) CC="$(CC)" CFLAGS_SITE="$(CFLAGS)" CDBG="" C32="" all32
-
-qlib2/lib64: PHONY
-	@cd qlib2 && \
-		echo ---------- ; \
-		echo Making qlib2 in: `pwd` ; \
-		$(MAKE) CC="$(CC)" CFLAGS_SITE="$(CFLAGS)" CDBG="" C64="" all64
-
-qlib2/lib_ew:
-		mkdir -p $@
-
-qlib2/lib_ew/libqlib2.a:	qlib2/lib${QLIB_BITS}/libqlib2.a
-		cp qlib2/lib${QLIB_BITS}/libqlib2.a $@
-
-qlib2/lib_ew/libqlib2.debug.a:	qlib2/lib${QLIB_BITS}/libqlib2.debug.a
-		cp qlib2/lib${QLIB_BITS}/libqlib2.debug.a $@
-
-qlib2/lib_ew/libqlib2nl.a:	qlib2/lib${QLIB_BITS}/libqlib2nl.a
-		cp qlib2/lib${QLIB_BITS}/libqlib2nl.a $@
-
-qlib2/lib_ew/libqlib2nl.debug.a: qlib2/lib${QLIB_BITS}/libqlib2nl.debug.a
-		cp qlib2/lib${QLIB_BITS}/libqlib2nl.debug.a $@
 
 #libew: LIBEW_MESSAGE $L/libew.a
 
@@ -134,9 +67,6 @@ $L/libew_mt.a: $(LIBEW_MT_MODULES)
 # Clean-up rules
 clean:	clean/here \
 	clean/lib \
-	clean/libcrypto \
-	clean/libdali \
-	clean/qlib2 \
 	clean/unix \
 	clean/util
 
@@ -149,32 +79,12 @@ clean/lib: PHONY
 		echo "$(RM) a.out core lib*.a lib*.lib *.o *.obj *% *~" ; \
 		$(RM) a.out core lib*.a lib*.lib *.o *.obj *% *~
 
-clean/libcrypto \
-clean/libgd \
 clean/unix \
 clean/util: PHONY
 	-@cd $(@F) && \
 		echo Cleaning in: `pwd` ; \
 		$(MAKE) -f makefile.unix clean
 
-clean/libdali: PHONY
-	-@cd libdali && \
-		echo Cleaning in: `pwd` ; \
-		$(MAKE) clean
-
-clean/qlib2: PHONY
-	-@cd qlib2 && \
-		echo Cleaning in: `pwd` ; \
-		$(MAKE) clean ; \
-		echo "$(RM) lib_ew/*" ; \
-		$(RM) lib_ew/*
-
-clean_bin: \
-	clean_bin/libgd
-
-clean_bin/libgd: PHONY
-	-@cd libgd && \
-		echo Cleaning binaries in: `pwd` ; \
-		$(MAKE) -f makefile.unix clean_bin
+clean_bin: PHONY
 
 PHONY:

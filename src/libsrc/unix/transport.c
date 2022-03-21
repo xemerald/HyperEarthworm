@@ -1825,7 +1825,7 @@ static sem_t *create_semaphore( const long memkey )
 	int   omask;
 
 /* Destroy semaphore if it already exists */
-	if ( (result = sem_open(key_2_path( memkey, 0 ), 0)) != (sem_t *)-1 ) {
+	if ( (result = sem_open(key_2_path( memkey, 0 ), 0)) != SEM_FAILED ) {
 		if ( sem_close(result) == -1 )
 			tport_syserr( "tport_create sem_close", memkey );
 		if ( sem_unlink(key_2_path( memkey, 0 )) == -1 )
@@ -1834,7 +1834,7 @@ static sem_t *create_semaphore( const long memkey )
 /* Temporarily clear any existing file creation mask */
 	omask = umask(0);
 /* Make semaphore for this shared memory region & set semval = SHM_FREE */
-	if ( (result = sem_open(key_2_path( memkey, 0 ), O_CREAT, SHM_DEFAULT_MASK, SHM_FREE)) == (sem_t *)-1 )
+	if ( (result = sem_open(key_2_path( memkey, 0 ), O_CREAT, SHM_DEFAULT_MASK, SHM_FREE)) == SEM_FAILED )
 		tport_syserr( "tport_create semget", memkey );
 /* Restore any existing file creation mask */
 	if ( omask )
