@@ -329,7 +329,7 @@ int tport_getmsg(
 	const uint8_t const *ring_end = ring_p + shm->keymax;  /* pointer to the end of ring        */
 	TPORT_HEAD           thead;                            /* transport header from memory      */
 	uint8_t             *th_p;                             /* pointer to transport layer header */
-	MSG_TRACK            trak_in  = { 0 };                 /* sequence #, outpointer keeper     */
+	MSG_TRACK            trak_in;                          /* sequence #, outpointer keeper     */
 	RING_INDEX_T         keyin;                            /* in-pointer to shared memory       */
 	RING_INDEX_T         keyold;                           /* oldest complete message in memory */
 	RING_INDEX_T         keyget;                           /* pointer at which to start search  */
@@ -1516,11 +1516,11 @@ static RING_INDEX_T find_latest_keyget(
 			for ( i = 0, trak_ptr = trak_list; i < ntrak; i++, trak_ptr++ ) {
 				if ( trak_ptr->memkey == memkey ) {
 				/* DEBUG */
-					/* printf("tport_getmsg: Pre-reset: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, *keyin); */
+					printf("tport_getmsg: Pre-reset: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, *keyin);
 				/* Reset keyout */
 					trak_ptr->keyout %= shm->keymax;
 				/* DEBUG */
-					/* printf("tport_getmsg: Intermed: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, *keyin); */
+					printf("tport_getmsg: Intermed: keyout=%10u keyold=%10u keyin=%10u\n", trak_ptr->keyout, keyold, *keyin);
 				/*
 				 * Make sure new keyout points to keyin or to a msg's first-byte;
 				 * if not, we've been lapped, so set keyout to keyold
