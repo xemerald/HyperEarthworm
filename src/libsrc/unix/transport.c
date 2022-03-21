@@ -1765,9 +1765,9 @@ static char *key_2_path( const long memkey, const int is_shm )
 	static char result[256] = { 0 };
 
 	if ( memkey == shm_flag_key )
-		sprintf(result, "%s%ld", is_shm ? BASE_SHM_FLAG : BASE_SEM_FLAG, memkey);
+		sprintf(result, "%ld", is_shm ? BASE_SHM_FLAG : BASE_SEM_FLAG, memkey);
 	else
-		sprintf(result, "%s%ld", is_shm ? BASE_SHM : BASE_SEM, memkey);
+		sprintf(result, "%ld", is_shm ? BASE_SHM : BASE_SEM, memkey);
 
 	return result;
 }
@@ -1800,8 +1800,8 @@ static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long me
 /* Temporarily clear any existing file creation mask */
 	omask = umask(0);
 /* Connect and map shared memory region */
-	flags = O_CREAT | O_RDWR;
-	if ( (*regid = shm_open(key_2_path( memkey, 1 ), O_CREAT | O_RDWR, SHM_DEFAULT_MASK)) == -1 )
+	flags = O_CREAT | O_RDWR | O_EXCL;
+	if ( (*regid = shm_open(key_2_path( memkey, 1 ), flags, SHM_DEFAULT_MASK)) == -1 )
 		tport_syserr( "tport_create shm_open", memkey );
 	ftruncate(*regid, nbytes);
 
