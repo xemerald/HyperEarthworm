@@ -2001,10 +2001,10 @@ static int create_semaphore( const long memkey )
 		tport_syserr( "tport_create semget", memkey );
 
 	//semarg->val = SHM_FREE;
-	//result = semctl(result, 0, SETVAL, semarg);
+	//if ( semctl(result, 0, SETVAL, semarg) == -1 )
+		//tport_syserr( "tport_create semctl", memkey );
 
-	result = semctl(result, 0, SETVAL, SHM_FREE);
-	if ( result == -1 )
+	if ( semctl(result, 0, SETVAL, SHM_FREE) == -1 )
 		tport_syserr( "tport_create semctl", memkey );
 
 	return result;
