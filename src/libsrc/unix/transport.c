@@ -1765,9 +1765,9 @@ static char *key_2_path( const long memkey, const int is_shm )
 	static char result[256] = { 0 };
 
 	if ( memkey == shm_flag_key )
-		sprintf(result, "%ld", is_shm ? BASE_SHM_FLAG : BASE_SEM_FLAG, memkey);
+		sprintf(result, "ew_%s_%ld", is_shm ? "shm_flag" : "sem_flag", memkey);
 	else
-		sprintf(result, "%ld", is_shm ? BASE_SHM : BASE_SEM, memkey);
+		sprintf(result, "ew_%s_%ld", is_shm ? "shm" : "sem", memkey);
 
 	return result;
 }
