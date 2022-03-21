@@ -14,15 +14,15 @@ USE_CC_BITS=true
 
 # For running EW on Linux, if any ports are used, make sure that your
 # selected ports for wave_serverV or exports are below the range specified
-# by your kernel for dynamic port allocation 
+# by your kernel for dynamic port allocation
 # (see sysctl net.ipv4.ip_local_port_range)
 
 # Set environment variables describing your Earthworm directory/version
 
 # Use value from elsewhere IF defined (eg from .bashrc)
 # otherwise use the value after the :-
-export EW_HOME="${EW_INSTALL_HOME:-/home/earthworm}"
-export EW_VERSION="${EW_INSTALL_VERSION:-earthworm_7.10}"
+export EW_HOME="${EW_INSTALL_HOME:-/home/ew/}"
+export EW_VERSION="${EW_INSTALL_VERSION:-HyperEarthworm}"
 EW_RUN_DIR="${EW_RUN_DIR:-${EW_HOME}/run}"
 # Or set your own values directly
 #export EW_HOME=/opt/earthworm

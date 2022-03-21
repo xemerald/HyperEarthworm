@@ -1,0 +1,9 @@
+# Ignore the swap files.
+*.swp
+
+# Ignore the object files.
+*.o
+
+# Ignore the library files.
+*.a
+*.so

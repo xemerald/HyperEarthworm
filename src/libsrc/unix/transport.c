@@ -45,8 +45,6 @@
 #include "platform.h"
 #include "transport.h"
 
-static short Put_Init=1;           /* initialization flag */
-static short Get_Init=1;           /* initialization flag */
 static short Copyfrom_Init=1;      /* initialization flag */
 static short Flag_Init=1;          /* initialization flag */
 /* */
@@ -80,15 +78,17 @@ static sem_t get_semaphore( const long );
 static int   create_semaphore( const long );
 static int   get_semaphore( const long );
 #endif
-static MSG_TRACK *search_track_in_list( MSG_TRACK [], long *, const long, const MSG_TRACK * );
-static void search_logo_in_track_list( MSG_TRACK *, long *, const MSG_LOGO *, const long, const long );
+static MSG_TRACK *search_track_in_list( MSG_TRACK [], int *, const int, const MSG_TRACK * );
 static RING_INDEX_T find_latest_keyget(
-	SHM_HEAD *, MSG_TRACK [], const long, const MSG_LOGO [], const long, const long, RING_INDEX_T *
+	const SHM_HEAD *, MSG_TRACK [], const long , const MSG_LOGO [], const long, const long, RING_INDEX_T *
+);
+static void update_track_list_keyout(
+	MSG_TRACK [], const long, const MSG_LOGO [], const long, const long, const RING_INDEX_T
 );
 /* */
 static int  move_keyold_2_nextmsg( SHM_HEAD * );
-static long copy_msg_2_shm( SHM_HEAD *, long, const uint8_t *, const size_t );
-static long copy_shmmsg_2_buf( const SHM_HEAD *, long, uint8_t *, const size_t );
+static long copy_msg_2_shm( SHM_HEAD *, long, const void *, const size_t );
+static long copy_shmmsg_2_buf( const SHM_HEAD *, long, void *, const size_t );
 static void reset_key_shm( SHM_HEAD * );
 static int  track_getmsg_seq( const MSG_TRACK *, MSG_TRACK [], int *, int );
 static int  compare_msg_track( const void *, const void * );
@@ -213,8 +213,8 @@ void tport_detach( SHM_INFO *region )
  */
 int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 {
-	static volatile MSG_TRACK trak[NTRACK_PUT] = { { 0, { 0 }, 0, 0, 0 } };  /* sequence number keeper   */
-	static volatile int       ntrak = 0;                     /* # of logos seen so far   */
+	static MSG_TRACK trak[NTRACK_PUT] = { { 0, { 0 }, 0, 0, 0 } };  /* sequence number keeper   */
+	static int       ntrak = 0;                     /* # of logos seen so far   */
 #ifndef _USE_POSIX_SHM
 	struct sembuf sops;                  /* semaphore operations; changed to non-static 980424:ldd */
 	int           tries_left;
@@ -225,7 +225,6 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 	MSG_TRACK *trak_ptr = NULL;          /* transport layer header to put       */
 	SHM_HEAD  *shm      = region->addr;  /* pointer to start of memory region   */
 	long       ring_pos = 0;             /* transport layer header to put       */
-	int        j;
 
 	const long size_tporth = sizeof(TPORT_HEAD);
 
@@ -339,7 +338,7 @@ int tport_getmsg(
 
 /* Make sure all requested logos are entered in tracking list */
 	memset(&trak_in, 0, sizeof(MSG_TRACK));
-	trak_in.memkey = memkey;
+	trak_in.memkey = region->key;
 /* for all logos we're tracking */
 	for ( i = 0; i < nget; i++ ) {
 		trak_in.logo = getlogo[i];
@@ -371,7 +370,7 @@ int tport_getmsg(
 			exit(1);
 		}
 
-		keyget += sizeof(TPORT_HEAD) + thead.size;
+		keyget += sizeof(TPORT_HEAD);
 	/* See if this msg matches any requested type */
 		for ( i = 0; i < nget; i++ ) {
 			if ( !COMPARE_MSG_LOGO( getlogo + i, &thead.logo ) )
@@ -386,7 +385,8 @@ int tport_getmsg(
 			}
 			else {
 			/* Copy message by chunks to caller's address */
-				copy_shmmsg_2_buf( shm, ir, msg, thead.size );
+				copy_shmmsg_2_buf( shm, keyget, msg, thead.size );
+				keyget += thead.size;
 			/* See if we got run over by tport_putmsg while copying msg */
 			/* if we did, go back and try to get a msg cleanly          */
 				keyold = shm->keyold;
@@ -410,7 +410,7 @@ int tport_getmsg(
 	} /* end while over ring */
 
 /* Update outpointer (->msg after retrieved one) for all requested logos */
-	update_track_list_keyout( trak, ntrak, getlogo, nget, memkey, keyget );
+	update_track_list_keyout( trak, ntrak, getlogo, nget, region->key, keyget );
 
 	return status;
 }
@@ -1559,7 +1559,7 @@ static RING_INDEX_T find_latest_keyget(
  *
  */
 static MSG_TRACK *search_track_in_list(
-	MSG_TRACK trak_list[], long *ntrak, const long max_ntrak, const MSG_TRACK *track_in
+	MSG_TRACK trak_list[], int *ntrak, const int max_ntrak, const MSG_TRACK *trak_in
 ) {
 	MSG_TRACK   *result = NULL;
 	const size_t size_msg_trak = sizeof(MSG_TRACK);
@@ -1568,10 +1568,10 @@ static MSG_TRACK *search_track_in_list(
 	result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
 	if ( !result ) {
 	/* Make an entry in trak for this logo; if there's room */
-		if ( ntrak < max_ntrak ) {
+		if ( *ntrak < max_ntrak ) {
 			trak_list[*ntrak] = *trak_in;
 			(*ntrak)++;
-			qsort(trak, *ntrak, size_msg_trak, compare_msg_track);
+			qsort(trak_list, *ntrak, size_msg_trak, compare_msg_track);
 		/* Search again to return the new pointer of this input track inside the list */
 			result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
 		}
@@ -1608,20 +1608,21 @@ static void update_track_list_keyout(
 /*
  *
  */
-static long copy_msg_2_shm( SHM_HEAD *shm, long ring_pos, const uint8_t *msg, const size_t size )
+static long copy_msg_2_shm( SHM_HEAD *shm, long ring_pos, const void *msg, const size_t size )
 {
 	uint8_t *ring_p = (uint8_t *)(shm + 1) + ring_pos;  /* pointer to ring part of memory */
+	uint8_t *msg_p  = (uint8_t *)msg;  /* pointer to ring part of memory */
 	size_t   rspace = shm->keymax - ring_pos;
 
 /* Now copy data into shared memory by chunks... */
 	if ( size <= rspace ) {
-		memcpy(ring_p, msg, size);
+		memcpy(ring_p, msg_p, size);
 		ring_pos += size;
 	}
 	else {
-		memcpy(ring_p, msg, rspace);
+		memcpy(ring_p, msg_p, rspace);
 		ring_pos = size - rspace;
-		memcpy(shm + 1, msg + rspace, ring_pos);
+		memcpy(shm + 1, msg_p + rspace, ring_pos);
 	}
 
 	return ring_pos;
@@ -1631,20 +1632,21 @@ static long copy_msg_2_shm( SHM_HEAD *shm, long ring_pos, const uint8_t *msg, co
  *
  */
 static long copy_shmmsg_2_buf(
-	const SHM_HEAD *shm, long ring_pos, uint8_t *buf, const size_t size
+	const SHM_HEAD *shm, long ring_pos, void *buf, const size_t size
 ) {
 	uint8_t *ring_p = (uint8_t *)(shm + 1) + ring_pos;  /* pointer to ring part of memory */
+	uint8_t *buf_p  = (uint8_t *)buf;  /* pointer to ring part of memory */
 	size_t   rspace = shm->keymax - ring_pos;
 
 /* Copy message by chunks to caller's address */
 	if ( size <= rspace ) {
-		memcpy(buf, ring_p, size);
+		memcpy(buf_p, ring_p, size);
 		ring_pos += size;
 	}
 	else {
-		memcpy(buf, ring_p, rspace);
+		memcpy(buf_p, ring_p, rspace);
 		ring_pos = size - rspace;
-		memcpy(buf + rspace, shm + 1, ring_pos);
+		memcpy(buf_p + rspace, shm + 1, ring_pos);
 	}
 
 	return ring_pos;
@@ -1999,10 +2001,10 @@ static int create_semaphore( const long memkey )
 		tport_syserr( "tport_create semget", memkey );
 
 	//semarg->val = SHM_FREE;
-	//res = semctl(result, 0, SETVAL, semarg);
+	//result = semctl(result, 0, SETVAL, semarg);
 
-	res = semctl(result, 0, SETVAL, SHM_FREE);
-	if ( res == -1 )
+	result = semctl(result, 0, SETVAL, SHM_FREE);
+	if ( result == -1 )
 		tport_syserr( "tport_create semctl", memkey );
 
 	return result;
@@ -2056,7 +2058,7 @@ static SHM_HEAD *attach_shm_region( int *regid, const long memkey )
 		return NULL;
 	}
 	result = (SHM_HEAD *)shmat(*regid, 0, SHM_RND);
-	if ( shm == (SHM_HEAD *)-1 )
+	if ( result == (SHM_HEAD *)-1 )
 		tport_syserr( "tport_attach shmat ->header", memkey );
 /* Fetch the size of entire shared memory */
 	nbytes = result->nbytes;

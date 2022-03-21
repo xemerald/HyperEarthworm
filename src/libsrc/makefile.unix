@@ -136,7 +136,6 @@ clean:	clean/here \
 	clean/lib \
 	clean/libcrypto \
 	clean/libdali \
-	clean/libgd \
 	clean/qlib2 \
 	clean/unix \
 	clean/util
