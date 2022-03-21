@@ -36,7 +36,11 @@ typedef struct {                   /******* shared memory information *******/
                                    /*                                       */
 #if defined(_SOLARIS) || defined(_UNIX)  /* SOLARIS and LINUX ONLY:        */
         long             mid;      /* shared memory region identifier       */
+#ifdef _USE_POSIX_SHM
+		sem_t           *sid;      /* associated semaphore identifier       */
+#else
         long             sid;      /* associated semaphore identifier       */
+#endif
 #endif                             /*                                       */
 #ifdef _OS2                        /* OS2 ONLY:                             */
         PVOID            objAlloc; /* pointer to memory object              */
