@@ -1789,7 +1789,7 @@ static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long me
 {
 	void *result;  /* shared memory pointer */
 	int   omask;
-	int   prot
+	int   prot;
 	int   flags;
 
 /* Destroy memory region if it already exists */
