@@ -1092,7 +1092,7 @@ static int move_keyold_2_nextmsg( SHM_HEAD *shm )
 	uint8_t             *ohead_p  = (uint8_t *)&ohead;     /* pointer to oldest transport header  */
 	uint8_t const       *ohsz_end = (uint8_t *)&ohead.size + sizeof(ohead.size);
 	const uint8_t       *ring_p   = (uint8_t *)(shm + 1);  /* pointer to ring part of memory      */
-	const uint8_t const *ring_end = ring_p + shm->keymax;  /* pointer to the end of ring          */
+	const uint8_t *const ring_end = ring_p + shm->keymax;  /* pointer to the end of ring          */
 
 /* Point to the first byte of the oldest transport head */
 	ring_p += shm->keyold % shm->keymax;
