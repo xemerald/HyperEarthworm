@@ -61,8 +61,9 @@ static short    FlagInit = 1;          /* Flag initialization flag */
 #define FF_GETFLAG  4
 #define FF_CLASSIFY 5
 /* */
-#define FLAG_LOCK_TRIES 3
-#define RING_LOCK_TRIES 3
+#define MAX_LOCK_WAIT_USEC  10
+#define FLAG_LOCK_TRIES     4
+#define RING_LOCK_TRIES     3
 
 /* These functions are for internal use by transport functions only */
 static void *tport_bufthr( void * );
@@ -809,15 +810,6 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 	int       start   = 0;
 	int       stop    = 0;
 	int		  ret_val = 0;
-#ifndef _USE_POSIX_SHM
-	struct sembuf sops;     /* semaphore operations; changed to non-static 980424:ldd */
-	int           res;
-#ifdef _MACOSX
-	int             tries_left;
-#else
-	struct timespec timeout;
-#endif
-#endif
 
 /* */
 	if ( FlagInit )
@@ -825,8 +817,10 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 	if ( (smf = (SHM_FLAG *)smf_region.addr) == NULL )
 		return 0;
 /* */
-	if ( wait_shm_region( &smf_region, FLAG_LOCK_TRIES ) )
-		tport_syserr( "tport_flagop flag ->wait", smf_region.key );
+	if ( wait_shm_region( &smf_region, FLAG_LOCK_TRIES ) ) {
+		fprintf(stdout, "tport_flagop wait timed out; skip for next time!\n");
+		return 0;
+	}
 
 /* Define the range of scaning */
 	switch ( op ) {
@@ -1604,12 +1598,14 @@ static void detach_shm_region( SHM_INFO *region )
  */
 static int wait_shm_region( SHM_INFO *region, const int try_times )
 {
-	int result     = 0;
-	int tries_left = try_times;
+	const int waitusec   = getpid() % MAX_LOCK_WAIT_USEC + 1;
+	int       result     = 0;
+	int       tries_left = try_times;
 
 /* */
-	if ( tries_left )
-		while ( tries_left-- > 0 && (result = sem_trywait(region->sid)) == -1);
+	if ( tries_left > 1 )
+		while ( tries_left-- > 0 && (result = sem_trywait(region->sid)) == -1 )
+			usleep(waitusec);
 	else
 		result = sem_wait(region->sid);
 
@@ -1777,15 +1773,17 @@ static void detach_shm_region( SHM_INFO *region )
  */
 static int wait_shm_region( SHM_INFO *region, const int try_times )
 {
+	struct sembuf sops;
+	const int     waitusec   = getpid() % MAX_LOCK_WAIT_USEC + 1;
 	int           result     = 0;
 	int           tries_left = try_times;
-	struct sembuf sops;
 
 /* */
 	sops.sem_num = 0;
 	sops.sem_flg = 0;
 	sops.sem_op  = SHM_INUSE;
-	while ( tries_left-- > 0 && (res = semop(region->sid, &sops, 1)) == -1 );
+	while ( tries_left-- > 0 && (result = semop(region->sid, &sops, 1)) == -1 )
+		usleep(waitusec);
 /* This part is indeed a bottle neck for high throughput system */
 //#ifndef _MACOSX
 	//struct timespec timeout;
