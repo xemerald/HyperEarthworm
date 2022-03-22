@@ -470,7 +470,6 @@ int tport_getmsg(
 			*logo   = thead.logo;
 			*length = thead.size;
 		/* */
-			memset(&trak_in, 0, sizeof(MSG_TRACK));
 			trak_in.memkey = region->key;
 			trak_in.logo   = thead.logo;
 			trak_in.seq    = thead.seq;
@@ -584,11 +583,10 @@ int tport_copyfrom(
 			*length = thead.size;
 			*seq    = thead.seq;
 		/* */
-			memset(&trak_in, 0, sizeof(MSG_TRACK));
 			trak_in.memkey = region->key;
 			trak_in.logo   = thead.logo;
 			trak_in.seq    = thead.seq;
-			if ( status = track_getmsg_seq( &trak_in, trak, &ntrak, status ) == GET_MISS )
+			if ( (status = track_getmsg_seq( &trak_in, trak, &ntrak, status )) == GET_MISS )
 				status = lapped ? GET_MISS_LAPPED : GET_MISS_SEQGAP;
 		/* If you got here, that means we got a message we want so just leave the loop */
 			break;

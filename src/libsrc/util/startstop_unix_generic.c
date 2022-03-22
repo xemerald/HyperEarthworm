@@ -1299,7 +1299,7 @@ void EncodeStatus( char *statusMsg )
    if ( uname( &uts ) == -1 )
       printf( "startstop/EncodeStatus: Error getting system information\n" );
 
-   sprintf( statusMsg, "                    HyEARTHWORM-%zu SYSTEM STATUS\n\n",
+   sprintf( statusMsg, "                    EARTHWORM-%zu SYSTEM STATUS\n\n",
                        CHAR_BIT * sizeof( void * ) );
 
    sprintf( line, "        Hostname-OS:            %s - %s %s\n",
