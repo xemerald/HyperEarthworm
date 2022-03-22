@@ -90,6 +90,8 @@ static void close_shm_region( SHM_INFO * );
 static void destroy_semaphore( SHM_INFO * );
 static SHM_HEAD *attach_shm_region( int *, const long );
 static void detach_shm_region( SHM_INFO * );
+static int wait_shm_region( SHM_INFO *, const int );
+static int release_shm_region( SHM_INFO * );
 #ifdef _USE_POSIX_SHM
 static sem_t *create_semaphore( const long );
 static sem_t *get_semaphore( const long );
@@ -200,11 +202,7 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 {
 	static MSG_TRACK trak[NTRACK_PUT] = { { 0, { 0 }, 0, 0, 0 } };  /* sequence number keeper   */
 	static int       ntrak = 0;                   /* # of logos seen so far   */
-#ifndef _USE_POSIX_SHM
-	struct sembuf sops;                           /* semaphore operations; changed to non-static 980424:ldd */
-	int           tries_left;
-	int           res;
-#endif
+/* */
 	SHM_HEAD    *shm      = region->addr;           /* pointer to start of memory region   */
 	MSG_TRACK    trak_in  = { 0, { 0 }, 0, 0, 0 };  /* transport layer header to put       */
 	MSG_TRACK   *trak_ptr = NULL;                   /* transport layer header to put       */
@@ -219,22 +217,8 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 		return PUT_TOOBIG;
 	}
 /* Change semaphore; let others know you're using tracking structure & memory */
-#ifdef _USE_POSIX_SHM
-	if ( sem_wait(region->sid) == -1 )
-		tport_syserr( "tport_putmsg sem_wait ->inuse", region->key );
-#else
-	sops.sem_num = 0;   /* moved outside Put_Init loop 980424:ldd */
-	sops.sem_flg = 0;   /* moved outside Put_Init loop 980424:ldd */
-	sops.sem_op  = SHM_INUSE;
-	tries_left   = RING_LOCK_TRIES;
-	while ( tries_left > 0 && (res = semop( region->sid, &sops, 1 )) == -1 ) {
-		if ( errno != EINTR )
-			break;
-		tries_left--;
-	}
-	if ( res == -1 )
-		tport_syserr( "tport_putmsg semop ->inuse", region->key );
-#endif
+	if ( wait_shm_region( region, RING_LOCK_TRIES ) )
+		tport_syserr( "tport_putmsg region ->wait", region->key );
 
 /* Next, find incoming logo in list of combinations already seen */
 	trak_in.memkey = region->key;
@@ -278,14 +262,8 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
 	shm->keyin += size_tporth + length;
 
 /* Finished with shared memory, let others know via semaphore */
-#ifdef _USE_POSIX_SHM
-	if ( sem_post(region->sid) == -1 )
-		tport_syserr( "tport_putmsg sem_post ->inuse", region->key );
-#else
-	sops.sem_op = SHM_FREE;
-	if ( semop(region->sid, &sops, 1) == -1 )
-		tport_syserr( "tport_putmsg semop ->free", region->key );
-#endif
+	if ( release_shm_region( region ) )
+		tport_syserr( "tport_putmsg region ->release", region->key );
 
    return PUT_OK;
 }
@@ -305,11 +283,6 @@ int tport_putmsg( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg )
  */
 int tport_copyto( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg, unsigned char seq )
 {
-#ifndef _USE_POSIX_SHM
-	struct sembuf sops;                           /* semaphore operations; changed to non-static 980424:ldd */
-	int           tries_left;
-	int           res;
-#endif
 	SHM_HEAD    *shm    = region->addr;           /* pointer to start of memory region   */
 	RING_INDEX_T _keyin = 0;                      /* pointer to start of memory region   */
 	TPORT_HEAD   thead;                             /* transport layer header to put       */
@@ -329,22 +302,8 @@ int tport_copyto( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg, u
 	thead.seq   = seq;
 
 /* Change semaphore; let others know you're using tracking structure & memory */
-#ifdef _USE_POSIX_SHM
-	if ( sem_wait(region->sid) == -1 )
-		tport_syserr( "tport_copyto sem_wait ->inuse", region->key );
-#else
-	sops.sem_num = 0;
-	sops.sem_flg = 0;
-	sops.sem_op  = SHM_INUSE;
-	tries_left   = RING_LOCK_TRIES;
-	while ( tries_left > 0 && (res = semop( region->sid, &sops, 1 )) == -1 ) {
-		if ( errno != EINTR )
-			break;
-		tries_left--;
-	}
-	if ( res == -1 )
-		tport_syserr( "tport_copyto semop ->inuse", region->key );
-#endif
+	if ( wait_shm_region( region, RING_LOCK_TRIES ) == -1 )
+		tport_syserr( "tport_copyto region ->wait", region->key );
 
 /* First see if keyin will wrap; if so, reset both keyin and keyold */
 	if ( (RING_INDEX_T)(shm->keyin + size_tporth + length) < shm->keyold ) {
@@ -373,14 +332,8 @@ int tport_copyto( SHM_INFO *region, MSG_LOGO *putlogo, long length, char *msg, u
 	shm->keyin += size_tporth + length;
 
 /* Finished with shared memory, let others know via semaphore */
-#ifdef _USE_POSIX_SHM
-	if ( sem_post(region->sid) == -1 )
-		tport_syserr( "tport_copyto sem_post ->inuse", region->key );
-#else
-	sops.sem_op = SHM_FREE;
-	if ( semop(region->sid, &sops, 1) == -1 )
-		tport_syserr( "tport_copyto semop ->free", region->key );
-#endif
+	if ( release_shm_region( region ) )
+		tport_syserr( "tport_copyto region ->release", region->key );
 
    return PUT_OK;
 }
@@ -869,38 +822,11 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 /* */
 	if ( FlagInit )
 		tport_createFlag();
-	smf = (SHM_FLAG *)smf_region.addr;
-	if ( smf == NULL )
+	if ( (smf = (SHM_FLAG *)smf_region.addr) == NULL )
 		return 0;
 /* */
-#ifdef _USE_POSIX_SHM
-	if ( sem_wait(smf_region.sid) == -1 )
-		tport_syserr( "tport_flagop sem_wait ->inuse", smf_region.key );
-#else
-	sops.sem_num = 0;
-	sops.sem_flg = 0;
-	sops.sem_op = SHM_INUSE;
-#ifdef _MACOSX
-	tries_left = FLAG_LOCK_TRIES;
-	while ( tries_left > 0 && (res = semop(smf_region.sid, &sops, 1)) == -1 ) {
-		if ( errno != EINTR )
-			break;
-		tries_left--;
-	}
-#else
-/* This part is indeed a bottle neck for highthrough system */
-    timeout.tv_sec = 2;
-    timeout.tv_nsec = 0;
-    res = semtimedop( smf_region.sid, &sops, 1, &timeout );
-    if ( res == -1 && (errno == EAGAIN || errno == EINTR) ) {
-    /* assume that process that acquired lock has died and proceed */
-        fprintf(stdout, "tport_flagop semop/wait timed out; proceeding\n");
-        res = 0;
-    }
-#endif
-	if ( res == -1 )
-		tport_syserr( "tport_flagop semop ->inuse", smf_region.key );
-#endif
+	if ( wait_shm_region( &smf_region, FLAG_LOCK_TRIES ) )
+		tport_syserr( "tport_flagop flag ->wait", smf_region.key );
 
 /* Define the range of scaning */
 	switch ( op ) {
@@ -1011,15 +937,8 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 	}
 
 /* */
-#ifdef _USE_POSIX_SHM
-	if ( sem_post(smf_region.sid) == -1 )
-		tport_syserr( "tport_flagop sem_post ->inuse", smf_region.key );
-#else
-	sops.sem_op = SHM_FREE;
-	res = semop(smf_region.sid, &sops, 1);
-	if (res == -1)
-		tport_syserr( "tport_flagop semop ->free", smf_region.key );
-#endif
+	if ( release_shm_region( &smf_region ) )
+		tport_syserr( "tport_flagop flag ->release", smf_region.key );
 
 	return ret_val;
 }
@@ -1063,17 +982,17 @@ static void *tport_bufthr( void *arg )
 	}
 
 /* Flush all existing messages from the public memory region */
-   while(
-	   tport_copyfrom(
-		   _args->pub_region, _args->getlogo, _args->nget, &logo, &msgsize, buffer, _args->max_msgsize, &msgseq
-	   ) != GET_NONE
-   );
+	while (
+		tport_copyfrom(
+			_args->pub_region, _args->getlogo, _args->nget, &logo, &msgsize, buffer, _args->max_msgsize, &msgseq
+		) != GET_NONE
+	);
 
 	while ( 1 ) {
-	/* If a terminate flag is found, go to sleep; the main thread should cause the process to exit! */
+	/* If a terminate flag is found; the main thread may cause the process to exit! */
 		if ( tport_getflag( _args->pub_region ) == TERMINATE ) {
 			tport_putflag( _args->buf_region, TERMINATE );
-			sleep_ew( 100000 );
+			goto exit_procedure;
 		}
 
 		do {
@@ -1680,6 +1599,32 @@ static void detach_shm_region( SHM_INFO *region )
 	return;
 }
 
+/*
+ *
+ */
+static int wait_shm_region( SHM_INFO *region, const int try_times )
+{
+	int result     = 0;
+	int tries_left = try_times;
+
+/* */
+	if ( tries_left )
+		while ( tries_left-- > 0 && (result = sem_trywait(region->sid)) == -1);
+	else
+		result = sem_wait(region->sid);
+
+	return result;
+}
+
+/*
+ *
+ */
+static int release_shm_region( SHM_INFO *region )
+{
+/* */
+	return sem_post(region->sid);
+}
+
 #else /* ifdef _USE_POSIX_SHM */
 /*
  *
@@ -1826,4 +1771,49 @@ static void detach_shm_region( SHM_INFO *region )
 
 	return;
 }
+
+/*
+ *
+ */
+static int wait_shm_region( SHM_INFO *region, const int try_times )
+{
+	int           result     = 0;
+	int           tries_left = try_times;
+	struct sembuf sops;
+
+/* */
+	sops.sem_num = 0;
+	sops.sem_flg = 0;
+	sops.sem_op  = SHM_INUSE;
+	while ( tries_left-- > 0 && (res = semop(region->sid, &sops, 1)) == -1 );
+/* This part is indeed a bottle neck for high throughput system */
+//#ifndef _MACOSX
+	//struct timespec timeout;
+    //timeout.tv_sec  = 2;
+    //timeout.tv_nsec = 0;
+    //result = semtimedop(region->sid, &sops, 1, &timeout);
+    //if ( result == -1 && (errno == EAGAIN || errno == EINTR) ) {
+    /* Assume that process that acquired lock has died and proceed */
+        //result = 0;
+    //}
+//#endif
+
+	return result;
+}
+
+
+/*
+ *
+ */
+static int release_shm_region( SHM_INFO *region )
+{
+	struct sembuf sops;
+/* */
+	sops.sem_num = 0;
+	sops.sem_flg = 0;
+	sops.sem_op  = SHM_FREE;
+
+	return semop(region->sid, &sops, 1);
+}
+
 #endif
