@@ -70,7 +70,7 @@ static void *tport_bufthr( void * );
 static void  tport_syserr( const char *, const long );
 static void  tport_buferror( SHM_INFO *, short, char *, MSG_LOGO * );
 static int   tport_flagop( SHM_INFO *, const int, const int );
-
+/* */
 static MSG_TRACK *search_track_in_list( MSG_TRACK [], int *, const int, const MSG_TRACK * );
 static RING_INDEX_T find_latest_keyget(
 	const SHM_HEAD *, MSG_TRACK [], const long , const MSG_LOGO [], const long, const long, RING_INDEX_T *, int *
@@ -80,20 +80,22 @@ static void update_track_list_keyout(
 );
 /* */
 static int  move_keyold_2_nextmsg( SHM_HEAD * );
-static RING_INDEX_T copy_msg_2_shm( SHM_HEAD *, RING_INDEX_T, const void *, const size_t );
-static RING_INDEX_T copy_shmmsg_2_buf( const SHM_HEAD *, RING_INDEX_T, void *, const size_t );
-static void reset_key_shm( SHM_HEAD * );
 static int  track_getmsg_seq( const MSG_TRACK *, MSG_TRACK [], int *, int );
 static int  compare_msg_track( const void *, const void * );
-
+static void reset_key_shm( SHM_HEAD * );
+static RING_INDEX_T copy_msg_2_shm( SHM_HEAD *, RING_INDEX_T, const void *, const size_t );
+static RING_INDEX_T copy_shmmsg_2_buf( const SHM_HEAD *, RING_INDEX_T, void *, const size_t );
+/* SHM-related functions' prototypes */
 static SHM_HEAD *create_shm_region( int *, const long, const long );
-static void close_shm_region( SHM_INFO * );
-static void destroy_semaphore( SHM_INFO * );
 static SHM_HEAD *attach_shm_region( int *, const long );
 static void detach_shm_region( SHM_INFO * );
+static void close_shm_region( SHM_INFO * );
+static void destroy_semaphore( SHM_INFO * );
 static int wait_shm_region( SHM_INFO *, const int );
 static int release_shm_region( SHM_INFO * );
 #ifdef _USE_POSIX_SHM
+static char  *key_2_path( const long, const int );
+static int    path_2_key( const char *, const int );
 static sem_t *create_semaphore( const long );
 static sem_t *get_semaphore( const long );
 #else
@@ -1083,31 +1085,33 @@ static void tport_buferror( SHM_INFO *region, short ierr, char *note, MSG_LOGO *
 	return;
 }
 
+
 /*
  *
  */
-static int move_keyold_2_nextmsg( SHM_HEAD *shm )
-{
-	TPORT_HEAD           ohead;                            /* transport header of oldest msg      */
-	uint8_t             *ohead_p  = (uint8_t *)&ohead;     /* pointer to oldest transport header  */
-	uint8_t const       *ohsz_end = (uint8_t *)&ohead.size + sizeof(ohead.size);
-	const uint8_t       *ring_p   = (uint8_t *)(shm + 1);  /* pointer to ring part of memory      */
-	const uint8_t *const ring_end = ring_p + shm->keymax;  /* pointer to the end of ring          */
+static MSG_TRACK *search_track_in_list(
+	MSG_TRACK trak_list[], int *ntrak, const int max_ntrak, const MSG_TRACK *trak_in
+) {
+	MSG_TRACK   *result = NULL;
+	const size_t size_msg_trak = sizeof(MSG_TRACK);
 
-/* Point to the first byte of the oldest transport head */
-	ring_p += shm->keyold % shm->keymax;
-	if ( *ring_p != FIRST_BYTE )
-		return -1;
-/* Copy the oldest transport head to local memory; here we only need the size information */
-	for ( ; ohead_p < ohsz_end; ohead_p++, ring_p++ ) {
-		if ( ring_p >= ring_end )
-			ring_p = (uint8_t *)(shm + 1);
-		*ohead_p = *ring_p;
+/* */
+	result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
+	if ( !result ) {
+	/* Make an entry in trak for this logo; if there's room */
+		if ( *ntrak < max_ntrak ) {
+			trak_list[*ntrak]        = *trak_in;
+			trak_list[*ntrak].seq    = 0;
+			trak_list[*ntrak].keyout = 0;
+			trak_list[*ntrak].active = 0;
+			(*ntrak)++;
+			qsort(trak_list, *ntrak, size_msg_trak, compare_msg_track);
+		/* Search again to return the new pointer of this input track inside the list */
+			result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
+		}
 	}
-/* Just move the index to the next msg */
-	shm->keyold += sizeof(TPORT_HEAD) + ohead.size;
 
-	return 0;
+	return result;
 }
 
 /*
@@ -1202,34 +1206,6 @@ static RING_INDEX_T find_latest_keyget(
 /*
  *
  */
-static MSG_TRACK *search_track_in_list(
-	MSG_TRACK trak_list[], int *ntrak, const int max_ntrak, const MSG_TRACK *trak_in
-) {
-	MSG_TRACK   *result = NULL;
-	const size_t size_msg_trak = sizeof(MSG_TRACK);
-
-/* */
-	result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
-	if ( !result ) {
-	/* Make an entry in trak for this logo; if there's room */
-		if ( *ntrak < max_ntrak ) {
-			trak_list[*ntrak]        = *trak_in;
-			trak_list[*ntrak].seq    = 0;
-			trak_list[*ntrak].keyout = 0;
-			trak_list[*ntrak].active = 0;
-			(*ntrak)++;
-			qsort(trak_list, *ntrak, size_msg_trak, compare_msg_track);
-		/* Search again to return the new pointer of this input track inside the list */
-			result = (MSG_TRACK *)bsearch(trak_in, trak_list, *ntrak, size_msg_trak, compare_msg_track);
-		}
-	}
-
-	return result;
-}
-
-/*
- *
- */
 static void update_track_list_keyout(
 	MSG_TRACK trak_list[], const long ntrak, const MSG_LOGO getlogo[], const long nget,
 	const long memkey, const RING_INDEX_T keyget
@@ -1248,6 +1224,105 @@ static void update_track_list_keyout(
 			}
 		}
 	}
+
+	return;
+}
+
+/*
+ *
+ */
+static int move_keyold_2_nextmsg( SHM_HEAD *shm )
+{
+	TPORT_HEAD           ohead;                            /* transport header of oldest msg      */
+	uint8_t             *ohead_p  = (uint8_t *)&ohead;     /* pointer to oldest transport header  */
+	uint8_t const       *ohsz_end = (uint8_t *)&ohead.size + sizeof(ohead.size);
+	const uint8_t       *ring_p   = (uint8_t *)(shm + 1);  /* pointer to ring part of memory      */
+	const uint8_t *const ring_end = ring_p + shm->keymax;  /* pointer to the end of ring          */
+
+/* Point to the first byte of the oldest transport head */
+	ring_p += shm->keyold % shm->keymax;
+	if ( *ring_p != FIRST_BYTE )
+		return -1;
+/* Copy the oldest transport head to local memory; here we only need the size information */
+	for ( ; ohead_p < ohsz_end; ohead_p++, ring_p++ ) {
+		if ( ring_p >= ring_end )
+			ring_p = (uint8_t *)(shm + 1);
+		*ohead_p = *ring_p;
+	}
+/* Just move the index to the next msg */
+	shm->keyold += sizeof(TPORT_HEAD) + ohead.size;
+
+	return 0;
+}
+
+/*
+ *
+ */
+static int track_getmsg_seq(
+	const MSG_TRACK *trak_in, MSG_TRACK trak_list[], int *ntrak, int status
+) {
+	MSG_TRACK *trak_ptr = NULL;
+
+/* Find msg logo in tracked list */
+	trak_ptr = search_track_in_list( trak_list, ntrak, NTRACK_GET, trak_in );
+	if ( !trak_ptr ) {
+		status = status != GET_TOOBIG ? GET_NOTRACK : status;
+	}
+	else {
+		if ( !trak_ptr->active ) {
+		/* Activate sequence tracking if 1st msg */
+			trak_ptr->seq    = trak_in->seq;
+			trak_ptr->active = 1;
+		}
+	/* */
+		if ( status != GET_TOOBIG ) {
+		/* Check if sequence #'s match; update sequence # */
+			if ( trak_ptr->seq != trak_in->seq ) {
+				trak_ptr->seq = trak_in->seq;
+				status = GET_MISS;
+			}
+			else {
+				status = GET_OK;
+			}
+			trak_ptr->seq++;
+		}
+	}
+
+	return status;
+}
+
+/*
+ *
+ */
+static int compare_msg_track( const void *key, const void *elem )
+{
+	MSG_TRACK *_key = (MSG_TRACK *)key;
+	MSG_TRACK *_elem = (MSG_TRACK *)elem;
+
+/* */
+	if ( _key->memkey != _elem->memkey )
+		return _key->memkey > _elem->memkey ? 1 : -1;
+	if ( _key->logo.type != _elem->logo.type )
+		return _key->logo.type > _elem->logo.type ? 1 : -1;
+	if ( _key->logo.mod != _elem->logo.mod )
+		return _key->logo.mod > _elem->logo.mod ? 1 : -1;
+	if ( _key->logo.instid != _elem->logo.instid )
+		return _key->logo.instid > _elem->logo.instid ? 1 : -1;
+
+	return 0;
+}
+
+/*
+ *
+ */
+static void reset_key_shm( SHM_HEAD *shm )
+{
+/* */
+	shm->keyin  %= shm->keymax;
+	shm->keyold %= shm->keymax;
+/* */
+	if ( shm->keyin <= shm->keyold )
+		shm->keyin += shm->keymax;
 
 	return;
 }
@@ -1303,78 +1378,6 @@ static RING_INDEX_T copy_shmmsg_2_buf(
 	}
 
 	return keyout;
-}
-
-/*
- *
- */
-static int track_getmsg_seq(
-	const MSG_TRACK *trak_in, MSG_TRACK trak_list[], int *ntrak, int status
-) {
-	MSG_TRACK *trak_ptr = NULL;
-
-/* Find msg logo in tracked list */
-	trak_ptr = search_track_in_list( trak_list, ntrak, NTRACK_GET, trak_in );
-	if ( !trak_ptr ) {
-		status = status != GET_TOOBIG ? GET_NOTRACK : status;
-	}
-	else {
-		if ( !trak_ptr->active ) {
-		/* Activate sequence tracking if 1st msg */
-			trak_ptr->seq    = trak_in->seq;
-			trak_ptr->active = 1;
-		}
-	/* */
-		if ( status != GET_TOOBIG ) {
-		/* Check if sequence #'s match; update sequence # */
-			if ( trak_ptr->seq != trak_in->seq ) {
-				trak_ptr->seq = trak_in->seq;
-				status = GET_MISS;
-			}
-			else {
-				status = GET_OK;
-			}
-			trak_ptr->seq++;
-		}
-	}
-
-	return status;
-}
-
-/*
- *
- */
-static void reset_key_shm( SHM_HEAD *shm )
-{
-/* */
-	shm->keyin  %= shm->keymax;
-	shm->keyold %= shm->keymax;
-/* */
-	if ( shm->keyin <= shm->keyold )
-		shm->keyin += shm->keymax;
-
-	return;
-}
-
-/*
- *
- */
-static int compare_msg_track( const void *key, const void *elem )
-{
-	MSG_TRACK *_key = (MSG_TRACK *)key;
-	MSG_TRACK *_elem = (MSG_TRACK *)elem;
-
-/* */
-	if ( _key->memkey != _elem->memkey )
-		return _key->memkey > _elem->memkey ? 1 : -1;
-	if ( _key->logo.type != _elem->logo.type )
-		return _key->logo.type > _elem->logo.type ? 1 : -1;
-	if ( _key->logo.mod != _elem->logo.mod )
-		return _key->logo.mod > _elem->logo.mod ? 1 : -1;
-	if ( _key->logo.instid != _elem->logo.instid )
-		return _key->logo.instid > _elem->logo.instid ? 1 : -1;
-
-	return 0;
 }
 
 
@@ -1459,63 +1462,6 @@ static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long me
 /*
  *
  */
-static sem_t *create_semaphore( const long memkey )
-{
-	sem_t *result;
-	int   omask;
-
-/* Destroy semaphore if it already exists */
-	if ( (result = sem_open(key_2_path( memkey, 0 ), 0)) != SEM_FAILED ) {
-		if ( sem_close(result) == -1 )
-			tport_syserr( "tport_create sem_close", memkey );
-		if ( sem_unlink(key_2_path( memkey, 0 )) == -1 )
-			tport_syserr( "tport_create sem_unlink", memkey );
-	}
-/* Temporarily clear any existing file creation mask */
-	omask = umask(0);
-/* Make semaphore for this shared memory region & set semval = SHM_FREE */
-	if ( (result = sem_open(key_2_path( memkey, 0 ), O_CREAT, SHM_DEFAULT_MASK, SHM_FREE)) == SEM_FAILED )
-		tport_syserr( "tport_create semget", memkey );
-/* Restore any existing file creation mask */
-	if ( omask )
-		umask(omask);
-
-	return result;
-}
-
-/*
- *
- */
-static void close_shm_region( SHM_INFO *region )
-{
-/* Close and delete shared memory region */
-	if ( munmap(region->addr, region->addr->nbytes) == -1 )
-		tport_syserr( "tport_destroy munmap", region->key );
-	if ( close(region->mid) == -1 )
-		tport_syserr( "tport_destroy close", region->key );
-	if ( shm_unlink(key_2_path( region->key, 1 )) == -1 )
-		tport_syserr( "tport_destroy sem_unlink", region->key );
-
-	return;
-}
-
-/*
- *
- */
-static void destroy_semaphore( SHM_INFO *region )
-{
-/* Close and delete semaphore */
-	if ( sem_close(region->sid) == -1 )
-		tport_syserr( "tport_destroy sem_close", region->key );
-	if ( sem_unlink(key_2_path( region->key, 0 )) == -1 )
-		tport_syserr( "tport_destroy sem_unlink", region->key );
-
-	return;
-}
-
-/*
- *
- */
 static SHM_HEAD *attach_shm_region( int *regid, const long memkey )
 {
     void  *result;   /* shared memory pointer         */
@@ -1551,6 +1497,33 @@ static SHM_HEAD *attach_shm_region( int *regid, const long memkey )
 		tport_syserr( "tport_attach mmap ->region", memkey );
 
     return (SHM_HEAD *)result;
+}
+
+/*
+ *
+ */
+static sem_t *create_semaphore( const long memkey )
+{
+	sem_t *result;
+	int   omask;
+
+/* Destroy semaphore if it already exists */
+	if ( (result = sem_open(key_2_path( memkey, 0 ), 0)) != SEM_FAILED ) {
+		if ( sem_close(result) == -1 )
+			tport_syserr( "tport_create sem_close", memkey );
+		if ( sem_unlink(key_2_path( memkey, 0 )) == -1 )
+			tport_syserr( "tport_create sem_unlink", memkey );
+	}
+/* Temporarily clear any existing file creation mask */
+	omask = umask(0);
+/* Make semaphore for this shared memory region & set semval = SHM_FREE */
+	if ( (result = sem_open(key_2_path( memkey, 0 ), O_CREAT, SHM_DEFAULT_MASK, SHM_FREE)) == SEM_FAILED )
+		tport_syserr( "tport_create semget", memkey );
+/* Restore any existing file creation mask */
+	if ( omask )
+		umask(omask);
+
+	return result;
 }
 
 /*
@@ -1596,6 +1569,36 @@ static void detach_shm_region( SHM_INFO *region )
 /*
  *
  */
+static void close_shm_region( SHM_INFO *region )
+{
+/* Close and delete shared memory region */
+	if ( munmap(region->addr, region->addr->nbytes) == -1 )
+		tport_syserr( "tport_destroy munmap", region->key );
+	if ( close(region->mid) == -1 )
+		tport_syserr( "tport_destroy close", region->key );
+	if ( shm_unlink(key_2_path( region->key, 1 )) == -1 )
+		tport_syserr( "tport_destroy sem_unlink", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
+static void destroy_semaphore( SHM_INFO *region )
+{
+/* Close and delete semaphore */
+	if ( sem_close(region->sid) == -1 )
+		tport_syserr( "tport_destroy sem_close", region->key );
+	if ( sem_unlink(key_2_path( region->key, 0 )) == -1 )
+		tport_syserr( "tport_destroy sem_unlink", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
 static int wait_shm_region( SHM_INFO *region, const int try_times )
 {
 	const int waitusec   = getpid() % MAX_LOCK_WAIT_USEC + 1;
@@ -1622,6 +1625,7 @@ static int release_shm_region( SHM_INFO *region )
 }
 
 #else /* ifdef _USE_POSIX_SHM */
+
 /*
  *
  */
@@ -1639,7 +1643,7 @@ static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long me
 	}
 
 /* Real create shared memory region */
-	*regid = shmget(memkey, nbytes, IPC_CREAT | 0666);
+	*regid = shmget(memkey, nbytes, IPC_CREAT | SHM_DEFAULT_MASK);
 	if ( *regid == -1 )
 		tport_syserr( "tport_create shmget", memkey );
 
@@ -1649,58 +1653,6 @@ static SHM_HEAD *create_shm_region( int *regid, const long nbytes, const long me
 		tport_syserr( "tport_create shmat", memkey );
 
 	return result;
-}
-
-/*
- *
- */
-static int create_semaphore( const long memkey )
-{
-	int result;
-
-/* Make semaphore for this shared memory region & set semval = SHM_FREE */
-	result = semget(memkey, 1, IPC_CREAT | 0666);
-	if ( result == -1 )
-		tport_syserr( "tport_create semget", memkey );
-
-	//semarg->val = SHM_FREE;
-	//if ( semctl(result, 0, SETVAL, semarg) == -1 )
-		//tport_syserr( "tport_create semctl", memkey );
-
-	if ( semctl(result, 0, SETVAL, SHM_FREE) == -1 )
-		tport_syserr( "tport_create semctl", memkey );
-
-	return result;
-}
-
-/*
- *
- */
-static void close_shm_region( SHM_INFO *region )
-{
-	struct shmid_ds shmbuf;  /* shared memory data structure */
-
-/* Detach from shared memory region then destroy it */
-	if ( shmdt((char *)region->addr) == -1 )
-		tport_syserr( "tport_destroy shmdt", region->key );
-	if ( shmctl(region->mid, IPC_RMID, &shmbuf) == -1 )
-		tport_syserr( "tport_destroy shmctl", region->key );
-
-	return;
-}
-
-/*
- *
- */
-static void destroy_semaphore( SHM_INFO *region )
-{
-/* Destroy semaphore set for shared memory region */
-	//semarg->val = 0;
-	//semctl(region->sid, 0, IPC_RMID, semarg);
-	if ( semctl(region->sid, 0, IPC_RMID, 0) == -1 )
-		tport_syserr( "tport_destroy semctl", region->key );
-
-	return;
 }
 
 /*
@@ -1744,6 +1696,28 @@ static SHM_HEAD *attach_shm_region( int *regid, const long memkey )
 /*
  *
  */
+static int create_semaphore( const long memkey )
+{
+	int result;
+
+/* Make semaphore for this shared memory region & set semval = SHM_FREE */
+	result = semget(memkey, 1, IPC_CREAT | SHM_DEFAULT_MASK);
+	if ( result == -1 )
+		tport_syserr( "tport_create semget", memkey );
+
+	//semarg->val = SHM_FREE;
+	//if ( semctl(result, 0, SETVAL, semarg) == -1 )
+		//tport_syserr( "tport_create semctl", memkey );
+
+	if ( semctl(result, 0, SETVAL, SHM_FREE) == -1 )
+		tport_syserr( "tport_create semctl", memkey );
+
+	return result;
+}
+
+/*
+ *
+ */
 static int get_semaphore( const long memkey )
 {
 	int result;
@@ -1764,6 +1738,36 @@ static void detach_shm_region( SHM_INFO *region )
 /* Detach from shared memory region */
 	if ( shmdt((char *)region->addr) == -1 )
 		tport_syserr( "tport_detach shmdt", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
+static void close_shm_region( SHM_INFO *region )
+{
+	struct shmid_ds shmbuf;  /* shared memory data structure */
+
+/* Detach from shared memory region then destroy it */
+	if ( shmdt((char *)region->addr) == -1 )
+		tport_syserr( "tport_destroy shmdt", region->key );
+	if ( shmctl(region->mid, IPC_RMID, &shmbuf) == -1 )
+		tport_syserr( "tport_destroy shmctl", region->key );
+
+	return;
+}
+
+/*
+ *
+ */
+static void destroy_semaphore( SHM_INFO *region )
+{
+/* Destroy semaphore set for shared memory region */
+	//semarg->val = 0;
+	//semctl(region->sid, 0, IPC_RMID, semarg);
+	if ( semctl(region->sid, 0, IPC_RMID, 0) == -1 )
+		tport_syserr( "tport_destroy semctl", region->key );
 
 	return;
 }
@@ -1798,7 +1802,6 @@ static int wait_shm_region( SHM_INFO *region, const int try_times )
 
 	return result;
 }
-
 
 /*
  *
