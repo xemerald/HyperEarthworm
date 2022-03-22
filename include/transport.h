@@ -13,6 +13,7 @@
 
 #ifndef TRANSPORT_H
 #define TRANSPORT_H
+
 #ifdef _USE_POSIX_SHM
 #include <semaphore.h>
 #endif
@@ -124,36 +125,38 @@ volatile int             pid[MAX_NEWTPROC];  /* ids of modules using new transpo
 
 /* These functions are in transport.c */
 
-void  tport_create( SHM_INFO *, long, long );
-void  tport_destroy( SHM_INFO * );
-void  tport_attach( SHM_INFO *, long );
-void  tport_detach( SHM_INFO * );
-int   tport_putmsg( SHM_INFO *, MSG_LOGO *, long, char * );
-int   tport_getmsg( SHM_INFO *, MSG_LOGO *, short, MSG_LOGO *,
-                    long *, char *, long );
-int   tport_flush( SHM_INFO *, MSG_LOGO *, short, MSG_LOGO * );
-void  tport_putflag( SHM_INFO *, int );
-int   tport_getflag( SHM_INFO * );
-int   tport_detachFromFlag( SHM_INFO *region, int pid );
-int   tport_buffer  ( SHM_INFO *, SHM_INFO *, MSG_LOGO *, short, unsigned,
-                      unsigned char, unsigned char );
-int   tport_copyto  ( SHM_INFO *, MSG_LOGO *, long, char *, unsigned char );
-int   tport_copyfrom( SHM_INFO *, MSG_LOGO *, short, MSG_LOGO *,
-                      long *, char *, long, unsigned char * );
-void  tport_createFlag();
-void  tport_destroyFlag();
-int   tport_addToFlag( SHM_INFO *region, int pid );
-int   tport_newModule( int pid );
+void tport_create( SHM_INFO *, long, long );
+void tport_destroy( SHM_INFO * );
+void tport_attach( SHM_INFO *, long );
+void tport_detach( SHM_INFO * );
+int  tport_putmsg( SHM_INFO *, MSG_LOGO *, long, char * );
+int  tport_getmsg(
+	SHM_INFO *, MSG_LOGO *, short, MSG_LOGO *, long *, char *, long
+);
+int  tport_copyto( SHM_INFO *, MSG_LOGO *, long, char *, unsigned char );
+int  tport_copyfrom(
+	SHM_INFO *, MSG_LOGO *, short, MSG_LOGO *, long *, char *, long, unsigned char *
+);
+int  tport_flush( SHM_INFO *, MSG_LOGO *, short, MSG_LOGO * );
+int  tport_buffer(
+	SHM_INFO *, SHM_INFO *, MSG_LOGO *, short, unsigned, unsigned char, unsigned char
+);
+void tport_putflag( SHM_INFO *, int );
+int  tport_getflag( SHM_INFO * );
+int  tport_detachFromFlag( SHM_INFO *, int );
+void tport_createFlag();
+void tport_destroyFlag();
+int  tport_addToFlag( SHM_INFO *, int );
+int  tport_newModule( int );
 
 /* SOLARIS and LINUX ONLY: */
 /* This union definition is in sys/sem.h in SunOS, but not in Solaris */
 /* It's an argument template for semctl system calls on semaphores    */
 #if defined(_SOLARIS) || defined(_LINUX)
-union semun
-{
-        int              val;   /* value for SETVAL */
-        struct semid_ds *buf;   /* buffer for IPC_STAT & IPC_SET */
-        unsigned short  *array; /* array for GETALL & SETALL */
+union semun {
+	int              val;   /* value for SETVAL */
+	struct semid_ds *buf;   /* buffer for IPC_STAT & IPC_SET */
+	unsigned short  *array; /* array for GETALL & SETALL */
 };
 #endif
 
