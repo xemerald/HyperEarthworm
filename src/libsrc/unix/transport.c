@@ -819,7 +819,7 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 	if ( (smf = (SHM_FLAG *)smf_region.addr) == NULL )
 		return 0;
 /* */
-	if ( wait_shm_region( &smf_region, FLAG_LOCK_TRIES ) ) {
+	if ( wait_shm_region( &smf_region, op == FF_GETFLAG ? FLAG_LOCK_TRIES : 0 ) ) {
 		fprintf(stdout, "tport_flagop wait timed out; skip for next time!\n");
 		return 0;
 	}
@@ -1601,12 +1601,15 @@ static void destroy_semaphore( SHM_INFO *region )
  */
 static int wait_shm_region( SHM_INFO *region, const int try_times )
 {
-	const int waitusec   = getpid() % MAX_LOCK_WAIT_USEC + 1;
-	int       result     = 0;
-	int       tries_left = try_times;
+	static int waitusec   = 0;
+	int        result     = 0;
+	int        tries_left = try_times;
 
 /* */
-	if ( tries_left > 1 )
+	if ( !waitusec )
+		waitusec = getpid() % MAX_LOCK_WAIT_USEC + 1;
+/* */
+	if ( tries_left > 0 )
 		while ( tries_left-- > 0 && (result = sem_trywait(region->sid)) == -1 )
 			usleep(waitusec);
 	else
@@ -1778,27 +1781,36 @@ static void destroy_semaphore( SHM_INFO *region )
 static int wait_shm_region( SHM_INFO *region, const int try_times )
 {
 	struct sembuf sops;
-	const int     waitusec   = getpid() % MAX_LOCK_WAIT_USEC + 1;
+	static int    waitusec   = 0;
 	int           result     = 0;
 	int           tries_left = try_times;
 
 /* */
+	if ( !waitusec )
+		waitusec = getpid() % MAX_LOCK_WAIT_USEC + 1;
+/* */
 	sops.sem_num = 0;
 	sops.sem_flg = 0;
 	sops.sem_op  = SHM_INUSE;
-	while ( tries_left-- > 0 && (result = semop(region->sid, &sops, 1)) == -1 )
-		usleep(waitusec);
-/* This part is indeed a bottle neck for high throughput system */
+	if ( tries_left > 0 ) {
+		while ( tries_left-- > 0 && (result = semop(region->sid, &sops, 1)) == -1 )
+			usleep(waitusec);
+	}
+	else {
+		while ( (result = semop(region->sid, &sops, 1)) == -1 )
+			usleep(1);
+	/* This part is indeed a bottle neck for high throughput system */
 //#ifndef _MACOSX
-	//struct timespec timeout;
-    //timeout.tv_sec  = 2;
-    //timeout.tv_nsec = 0;
-    //result = semtimedop(region->sid, &sops, 1, &timeout);
-    //if ( result == -1 && (errno == EAGAIN || errno == EINTR) ) {
-    /* Assume that process that acquired lock has died and proceed */
-        //result = 0;
-    //}
+		//struct timespec timeout;
+	    //timeout.tv_sec  = 2;
+	    //timeout.tv_nsec = 0;
+	    //result = semtimedop(region->sid, &sops, 1, &timeout);
+	    //if ( result == -1 && (errno == EAGAIN || errno == EINTR) ) {
+	    /* Assume that process that acquired lock has died and proceed */
+	        //result = 0;
+	    //}
 //#endif
+	}
 
 	return result;
 }
