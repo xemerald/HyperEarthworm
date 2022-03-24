@@ -63,7 +63,7 @@ static short    FlagInit = 1;          /* Flag initialization flag */
 /* */
 #define MAX_LOCK_WAIT_USEC  10
 #define FLAG_LOCK_TRIES     4
-#define RING_LOCK_TRIES     3
+#define RING_LOCK_TRIES     0
 
 /* These functions are for internal use by transport functions only */
 static void *tport_bufthr( void * );
