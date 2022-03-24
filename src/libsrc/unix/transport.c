@@ -1609,11 +1609,13 @@ static int wait_shm_region( SHM_INFO *region, const int try_times )
 	if ( !waitusec )
 		waitusec = getpid() % MAX_LOCK_WAIT_USEC + 1;
 /* */
-	if ( tries_left > 0 )
+	if ( tries_left > 0 ) {
 		while ( tries_left-- > 0 && (result = sem_trywait(region->sid)) == -1 )
 			usleep(waitusec);
-	else
+	}
+	else {
 		result = sem_wait(region->sid);
+	}
 
 	return result;
 }
