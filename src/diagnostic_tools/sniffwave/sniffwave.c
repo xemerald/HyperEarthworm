@@ -867,6 +867,7 @@ void  print_data_feed_latencies(TRACE2_HEADER  *trh, SCNL_LAST_SCNL_PACKET_TIME 
  */
 static void end_process_signal( int sig )
 {
+	fprintf( stdout, "End of sniffwave process detaching from the shared memory...\n");
 	tport_detach( &Region );
 	return;
 }
