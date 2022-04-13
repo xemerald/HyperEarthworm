@@ -86,9 +86,10 @@ static int  compare_msg_track( const void *, const void * );
 static void reset_key_shm( SHM_HEAD * );
 static RING_INDEX_T copy_msg_2_shm( SHM_HEAD *, RING_INDEX_T, const void *, const size_t );
 static RING_INDEX_T copy_shmmsg_2_buf( const SHM_HEAD *, RING_INDEX_T, void *, const size_t );
-static int func_flag_index( const SHM_FLAG *, const int, int (*)( const int, const int ) );
-static int condition_pid_equal( const int, const int );
-static int condition_pid_empty( const int, const int );
+static int compare_flag_pid( const void *, const void * );
+static int get_flag_index( const SHM_FLAG *, const int, int (*)( const int, const int ) );
+static inline int condition_pid_equal( const int, const int );
+static inline int condition_pid_empty( const int, const int );
 /* SHM-related functions' prototypes */
 static SHM_HEAD *create_shm_region( int *, const long, const long );
 static SHM_HEAD *attach_shm_region( int *, const long );
@@ -814,16 +815,16 @@ static void tport_syserr( const char *msg, const long key )
 /*
  * tport_flagop() - Perform operation op on the flag
  */
-static int tport_flagop( SHM_INFO* region, const int pid, const int op )
+static int tport_flagop( SHM_INFO *region, const int pid, const int op )
 {
 	SHM_FLAG *smf;
-	int       i;
+	int      *pid_ptr = NULL;
 	int		  ret_val = 0;
 
 /* */
 	if ( FlagInit )
 		tport_createFlag();
-	if ( (smf = (SHM_FLAG *)smf_region.addr) == NULL )
+	if ( !(smf = (SHM_FLAG *)smf_region.addr) )
 		return 0;
 
 /* Define the range of scaning */
@@ -853,7 +854,10 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 		break;
 	}
 
-/* */
+/*
+ * Try to lock the flag ring.
+ * Operation GETFLAG & CLASSIFY are read-only job, therefore we'll just skip the locking process here.
+ */
 	if ( op != FF_GETFLAG && op != FF_CLASSIFY ) {
 		if ( wait_shm_region( &smf_region, 0 ) ) {
 			fprintf(stdout, "tport_flagop wait timed out; skip for next time!\n");
@@ -861,63 +865,70 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 		}
 	}
 /* Scaning for the pid position */
-	i = func_flag_index( smf, pid, condition_pid_equal );
-
+	pid_ptr = bsearch(&pid, smf->pid, smf->npid, sizeof(int), compare_flag_pid);
 /* */
 	switch ( op ) {
 	case FF_REMOVE:
 	/* Can't find the pid in the list */
-		if ( i < 0 ) {
+		if ( !pid_ptr ) {
 			ret_val = 0;
 		}
 	/* Found the pid in the list */
 		else {
-			smf->pid[i] = 0;
-			ret_val     = pid;
+			*pid_ptr = 0;
+			qsort(smf->pid, smf->npid--, sizeof(int), compare_flag_pid);
+			ret_val = pid;
 		}
 		break;
 	case FF_FLAG2ADD:
-		if ( i < 0 ) {
+		if ( !pid_ptr ) {
 		/* If no room, we'll have to treat as old-style */
 			if ( smf->npid <= MAX_NEWTPROC ) {
-				if ( (i = func_flag_index( smf, pid, condition_pid_empty )) >= 0 ) {
-					smf->pid[i] = pid;
-					smf->npid++;
+				if ( smf->pid[smf->npid] == 0 ) {
+					smf->pid[smf->npid++] = pid;
+					qsort(smf->pid, smf->npid, sizeof(int), compare_flag_pid);
 				}
 			}
 		}
 		ret_val = pid;
 		break;
 	case FF_FLAG2DIE:
-		if ( i < 0 ) {
+		if ( !pid_ptr ) {
 		/* It should be the old-style module */
 			if ( region != NULL )
 				(region->addr)->flag = pid;
 		}
-		else if ( smf->pid[i] > 0 ) {
-			smf->pid[i] = -smf->pid[i];
+		else if ( *pid_ptr > 0 ) {
+			*pid_ptr = -(*pid_ptr);
 		}
 		ret_val = pid;
 		break;
 	case FF_GETFLAG:
 	/* If pid unknown, treat as an old-style module */
-		if ( i < 0 )
+		if ( !pid_ptr )
 			ret_val = region != NULL ? (region->addr)->flag : 0;
 	/* Found it within dying list */
-		else if ( smf->pid[i] < 0 )
+		else if ( *pid_ptr < 0 )
 			ret_val = pid;
 		break;
 	case FF_CLASSIFY:
-		if ( i >= 0 )
-			ret_val = smf->pid[i] < 0 ? 2 : 1;
+		if ( pid_ptr )
+			ret_val = *pid_ptr < 0 ? 2 : 1;
 	default:
 		break;
 	}
 
-/* */
+/* Release the flag ring */
 	if ( op != FF_GETFLAG && op != FF_CLASSIFY ) {
+		int i;
 		if ( release_shm_region( &smf_region ) )
 			tport_syserr( "tport_flagop flag ->release", smf_region.key );
+		printf("total %d\n", smf->npid);
+		for ( i = 0; i < MAX_NEWTPROC; i++ ) {
+			printf("%d ", smf->pid[i]);
+			if ( i && !(i % 8) )
+				printf("\n");
+		}
 	}
 
 	return ret_val;
@@ -1367,7 +1378,7 @@ static RING_INDEX_T copy_shmmsg_2_buf(
 /*
  *
  */
-static int func_flag_index( const SHM_FLAG *smf, const int pid, int (*condition)( const int, const int ) )
+static int get_flag_index( const SHM_FLAG *smf, const int pid, int (*condition)( const int, const int ) )
 {
 	int index;
 	int step;
@@ -1390,9 +1401,26 @@ static int func_flag_index( const SHM_FLAG *smf, const int pid, int (*condition)
 }
 
 /*
+ * compare_flag_pid() - Compare function for flag pid list sorting. We need to make it in a decending
+ *                      order so we make a > b return less than zero.
+ */
+static int compare_flag_pid( const void *pid_1, const void *pid_2 )
+{
+	int _pid_1 = abs(*(int *)pid_1);
+	int _pid_2 = abs(*(int *)pid_2);
+
+	if ( _pid_1 == _pid_2 )
+		return 0;
+	else if ( _pid_1 > _pid_2 )
+		return -1;
+	else
+		return 1;
+}
+
+/*
  *
  */
-static int condition_pid_equal( const int pid_in_list, const int pid )
+static inline int condition_pid_equal( const int pid_in_list, const int pid )
 {
 	return (abs(pid_in_list) == pid);
 }
@@ -1400,7 +1428,7 @@ static int condition_pid_equal( const int pid_in_list, const int pid )
 /*
  *
  */
-static int condition_pid_empty( const int pid_in_list, const int pid )
+static inline int condition_pid_empty( const int pid_in_list, const int pid )
 {
 	return (!pid_in_list && pid);
 }
