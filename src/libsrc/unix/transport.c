@@ -194,6 +194,13 @@ void tport_attach( SHM_INFO *region, long memkey )
 void tport_detach( SHM_INFO *region )
 {
 	detach_shm_region( region );
+/*
+ * I think we need to detach from flag ring also, or there
+ * will be no enough space in pid list of flag. Also paired
+ * with the add to flag operation in the tport_attach.
+ */
+	tport_detachFromFlag( region, getpid() );
+
 	return;
 }
 

@@ -145,6 +145,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 
 #include "earthworm.h"
 #include "transport.h"
@@ -196,12 +197,15 @@ int  check_for_gap_overlap_and_output_message(TRACE2_HEADER  *trh, SCNL_LAST_SCN
  *      Data (now - last_scnl_time)
  *      Feed (now - last_packet_time) */
 void  print_data_feed_latencies(TRACE2_HEADER  *trh, SCNL_LAST_SCNL_PACKET_TIME *scnl_time, int *n_scnl_time);
+/* */
+static void end_process_signal( int );
+static void handle_signal( void );
 
 /************************************************************************************/
+SHM_INFO Region;
 
 int main( int argc, char **argv )
 {
-   SHM_INFO        region;
    long            RingKey;         /* Key to the transport ring to read from */
    MSG_LOGO        getlogo[NLOGO], logo;
    long            gotsize;
@@ -236,7 +240,8 @@ int main( int argc, char **argv )
    SCNL_LAST_SCNL_PACKET_TIME scnl_time[MAX_NUM_SCNL]; /* times of last scnl and packet */
    int n_scnl_time = 0;                                  /* current number of scnl_time items */
    MSRecord *msr = NULL;	/* mseed record */
-   
+
+	handle_signal();
    seconds_to_live = 0;
    dataflag = 0;
    statistics_flag = 0;
@@ -379,7 +384,7 @@ int main( int argc, char **argv )
     fprintf( stderr, "Invalid RingName; exiting!\n" );
     return -1;
   }
-  tport_attach( &region, RingKey );
+  tport_attach( &Region, RingKey );
 
 /* Look up local installation id
    *****************************/
@@ -434,7 +439,7 @@ int main( int argc, char **argv )
 
   /* Flush the ring
   *****************/
-  while ( tport_copyfrom( &region, getlogo, nLogo, &logo, &gotsize,
+  while ( tport_copyfrom( &Region, getlogo, nLogo, &logo, &gotsize,
             (char *)&msg, MAX_TRACEBUF_SIZ, &sequence_number ) != GET_NONE )
   {
          packet_total++;
@@ -448,13 +453,13 @@ int main( int argc, char **argv )
         packet_total = packet_total_size = 0;
         start_time = 0.0;
   }
-  while ( (!(seconds_to_live > 0) || 
+  while ( (!(seconds_to_live > 0) ||
          (time(0)-monitor_start_time < seconds_to_live)) &&
-         tport_getflag( &region ) != TERMINATE ) 
+         tport_getflag( &Region ) != TERMINATE )
 
   {
 
-    rc = tport_copyfrom( &region, getlogo, nLogo,
+    rc = tport_copyfrom( &Region, getlogo, nLogo,
                &logo, &gotsize, msg, MAX_TRACEBUF_SIZ, &sequence_number );
 
     if ( rc == GET_NONE )
@@ -511,7 +516,7 @@ int main( int argc, char **argv )
       strcpy(orig_datatype, trh->datatype);
       if(WaveMsg2MakeLocal( trh ) < 0)
       {
-        char scnl[20], dt[3];        
+        char scnl[20], dt[3];
         scnl[0] = 0;
         strcat( scnl, trh->sta);
         strcat( scnl, ".");
@@ -532,7 +537,7 @@ int main( int argc, char **argv )
             dt[i] = ' ';
         }
         dt[i] = 0;
-        fprintf(stderr, "WARNING: WaveMsg2MakeLocal rejected tracebuf.  Discard (%s).\n", 
+        fprintf(stderr, "WARNING: WaveMsg2MakeLocal rejected tracebuf.  Discard (%s).\n",
         	scnl );
         fprintf(stderr, "\tdatatype=[%s]\n", dt);
         continue;
@@ -564,7 +569,7 @@ int main( int argc, char **argv )
       }
 
       fprintf( stdout, "%d %s %3d ",
-                         trh->pinno, orig_datatype, trh->nsamp); 
+                         trh->pinno, orig_datatype, trh->nsamp);
       if (trh->samprate < 1.0) { /* more decimal places for slower sample rates */
           fprintf( stdout, "%6.4f", trh->samprate);
       } else {
@@ -575,7 +580,7 @@ int main( int argc, char **argv )
                          etime, trh->endtime);
       switch (trh->version[1]) {
       case TRACE2_VERSION1:
-         fprintf( stdout, "0x%02x 0x%02x ", 
+         fprintf( stdout, "0x%02x 0x%02x ",
                          CAST_QUALITY(trh->quality[0]), CAST_QUALITY(trh->quality[1]) );
          break;
       case TRACE2_VERSION11:
@@ -666,10 +671,10 @@ int main( int argc, char **argv )
             }
             avg = avg / trh->nsamp;
             fprintf(stdout, "Raw Data statistics max=%ld min=%ld avg=%f\n",
-                       max, min, avg); 
+                       max, min, avg);
             fprintf(stdout, "DC corrected statistics max=%f min=%f spread=%ld\n\n",
-                       (double)(max - avg), (double)(min - avg), 
-                       labs(max - min)); 
+                       (double)(max - avg), (double)(min - avg),
+                       labs(max - min));
           }
           else if ( (strcmp (trh->datatype, "s4")==0) ||
                     (strcmp (trh->datatype, "i4")==0)    )
@@ -686,10 +691,10 @@ int main( int argc, char **argv )
             }
             avg = avg / trh->nsamp;
             fprintf(stdout, "Raw Data statistics max=%ld min=%ld avg=%f\n",
-                       max, min, avg); 
+                       max, min, avg);
             fprintf(stdout, "DC corrected statistics max=%f min=%f spread=%ld\n\n",
-                       (double)(max - avg), (double)(min - avg), 
-                       labs(max - min)); 
+                       (double)(max - avg), (double)(min - avg),
+                       labs(max - min));
           }
           else
           {
@@ -702,6 +707,9 @@ int main( int argc, char **argv )
       } /* end of statistics_flag if */
     } /* end of process this tracebuf if */
   } /* end of while loop */
+/* */
+  tport_detach( &Region );
+
   if (seconds_to_live > 0 && start_time > 0.0)
   {
     datestr23 (start_time, stime, 256);
@@ -790,10 +798,10 @@ int  check_for_gap_overlap_and_output_message(TRACE2_HEADER  *trh, SCNL_LAST_SCN
 		if(diff_time > 0.0) {
 			/* it is a gap */
 			strcpy(type_str, "gap");
-		} 
+		}
                 else if (trh->endtime < scnl_time[i].last_scnl_starttime) {
 		    strcpy(type_str, "out-of-order"); /* this packet ends BEFORE the last packet started! */
-                } 
+                }
                 else {
 		    t1 = trh->starttime;
 		    strcpy(type_str, "overlap");
@@ -852,4 +860,32 @@ void  print_data_feed_latencies(TRACE2_HEADER  *trh, SCNL_LAST_SCNL_PACKET_TIME 
     /* Print Data and Feed latencies */
     fprintf( stdout, " [D:%4.2fs F:%4.1fs]", d_latency_second, d_packet_latency_second);
 
+}
+
+/*
+ *
+ */
+static void end_process_signal( int sig )
+{
+	tport_detach( &Region );
+	return;
+}
+
+/*
+ * handle_signal() -
+ */
+static void handle_signal( void )
+{
+	struct sigaction act;
+
+/* Signal handling */
+	sigemptyset(&act.sa_mask);
+	act.sa_sigaction = NULL;
+	act.sa_flags     = 0;
+	act.sa_handler   = end_process_signal;
+
+	sigaction(SIGINT , &act, (struct sigaction *)NULL);
+	sigaction(SIGQUIT, &act, (struct sigaction *)NULL);
+
+	return;
 }

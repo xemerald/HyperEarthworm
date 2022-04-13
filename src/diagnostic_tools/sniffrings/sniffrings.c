@@ -31,10 +31,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>
 #include <time.h>
 #include <earthworm.h>
 #include <transport.h>
-#include <mem_circ_queue.h> 
+#include <mem_circ_queue.h>
 
 #define VERSION  "1.0.1 2016.10.10"
 
@@ -44,7 +45,7 @@
  ***************/
 #define THREAD_STACK 8192
 
-/* Error messages used by sniffrings 
+/* Error messages used by sniffrings
  ***********************************/
 #define  ERR_MISSMSG       0   /* message missed in transport ring        */
 #define  ERR_TOOBIG        1   /* retreived msg too large for buffer      */
@@ -96,7 +97,7 @@ typedef struct {
 } TYPE_GETUTIL_INFO;
 
 typedef struct {
-  char        *cmdname;      /* pointer to executable name */ 
+  char        *cmdname;      /* pointer to executable name */
   char        *InRing;         /* Name of input ring           */
   MSG_LOGO    GetLogo[1];        /* array for requesting module,type,instid  */
   short       nLogo;           /* number of logos to get                   */
@@ -105,7 +106,7 @@ typedef struct {
 } TYPE_ARGS_STACKER;
 
 typedef struct {
-  char        *cmdname;      /* pointer to executable name */ 
+  char        *cmdname;      /* pointer to executable name */
   char        verbose;            /* verbose will print names     */
   TYPE_GETUTIL_INFO *getutil_info;
 } TYPE_ARGS_PRINTER;
@@ -131,14 +132,14 @@ int main( int argc, char *argv[] )
 
   time_t       now;	                        /* current time, used for timing heartbeats */
   int          no_flush = 0;
-  char         *cmdname;      /* pointer to executable name */ 
+  char         *cmdname;      /* pointer to executable name */
 
   const int    wait_time_thr_slice = 500;     /* slice of waiting time for joining all threads */
   const int    wait_time_thr_tot   = 5000;    /* total of waiting time for joining all threads */
   int          wait_time_thr_count = 0;       /* counter of waiting time for joining all threads */
 
   time_t       expiration_date = 0;           /* if non-0, self terminate after this time */
-  
+
   cmdname = argv[0];
 
   /* Create Semaphores
@@ -178,7 +179,7 @@ int main( int argc, char *argv[] )
     printf( "sniffrings: error getting ring names; exiting!\n" );
     return -1;
   }
-  
+
   if ( argc >= 4 && strcmp(argv[argc-2],"-t") == 0 ) {
     int seconds = atoi( argv[argc-1] );
     if ( seconds <= 0 ) {
@@ -188,7 +189,7 @@ int main( int argc, char *argv[] )
     expiration_date = seconds;    /* so we know to set a real time once the actual processing starts */
     argc -= 2;
   }
-    
+
 
   remove_duplicated_ringname(InRings, &nRings);
 
@@ -337,7 +338,7 @@ int main( int argc, char *argv[] )
      time(&now);
      expiration_date += now;
   }
-  
+
   /* Start main sniffrings service loop, which aimlessly beats its heart.
    **********************************/
   while ( !testlck_flags_term(FLAG_TERM_THR_PRINTER) && !testlck_flags_term(FLAG_TERM_THR_STACKER ) )
@@ -346,15 +347,15 @@ int main( int argc, char *argv[] )
      ****************************************/
     time(&now);
     /*
-       if (difftime(now,MyLastBeat) > (double)HeartBeatInt ) 
+       if (difftime(now,MyLastBeat) > (double)HeartBeatInt )
        {
        snprintf( errText, STR_LEN_ERRTEXT-1, "%ld %ld\n%c", (long) now, (long) MyPid,0);
        sniffrings_status( &HeartLogo, errText);
        MyLastBeat = now;
        }
        */
-    
-    /* Check for self-termination 
+
+    /* Check for self-termination
      *****************************/
     if ( expiration_date && (now > expiration_date) ) {
         printf("%s: self-termination requested.\n", cmdname);
@@ -366,7 +367,7 @@ int main( int argc, char *argv[] )
     sleep_ew(100);
   } /*end while of monitoring loop */
 
-  printf("%s: termination requested; waiting for all threads (max. %d sec.)!\n", 
+  printf("%s: termination requested; waiting for all threads (max. %d sec.)!\n",
       cmdname, wait_time_thr_tot/1000 );
 
   /* Waiting for termination of other threads before exiting */
@@ -374,15 +375,17 @@ int main( int argc, char *argv[] )
   wait_time_thr_count=0;
   while( wait_time_thr_count < wait_time_thr_tot
       && !testlck_flags_term(FLAG_TERM_THR_PRINTER | FLAG_TERM_THR_STACKER) ) {
-    sleep_ew(wait_time_thr_slice);
+		sleep_ew(wait_time_thr_slice);
 
-    /* Unlock possible situation when MessagePrinter is waiting for new item
-     * from an empty queue. It is exexcuted only one time. */
-    if(wait_time_thr_count==0 && !testlck_flags_term(FLAG_TERM_THR_PRINTER)) {
-      POST_SPECIFIC_SEMAPHORE_EW(sema_CountBusy);
-    }
+	/*
+	 * Unlock possible situation when MessagePrinter is waiting for new item
+	 * from an empty queue. It is exexcuted only one time.
+	 */
+		if(wait_time_thr_count==0 && !testlck_flags_term(FLAG_TERM_THR_PRINTER)) {
+		POST_SPECIFIC_SEMAPHORE_EW(sema_CountBusy);
+		}
 
-    wait_time_thr_count+=wait_time_thr_slice;
+		wait_time_thr_count+=wait_time_thr_slice;
   }
 
   if(!testlck_flags_term(FLAG_TERM_THR_PRINTER)) {
@@ -427,11 +430,11 @@ thr_ret MessageStacker( void *p )
   time_t     now;
   int        ret;
   int        error_occurred = 0;
-  int        NumOfTimesQueueLapped= 0; /* number of messages lost due to 
+  int        NumOfTimesQueueLapped= 0; /* number of messages lost due to
 					  queue lap */
   /* Message Buffers to be allocated
    *********************************/
-  char       *msgb = NULL;           /* msg retrieved from transport      */ 
+  char       *msgb = NULL;           /* msg retrieved from transport      */
   char       errText[STR_LEN_ERRTEXT]; /* string for log/error/heartbeat messages */
 
   /* set last character to zero */
@@ -454,9 +457,9 @@ thr_ret MessageStacker( void *p )
     /* Allocate space for messages buffer
      ***********************************************************/
     /* Buffer for Read thread: */
-    if ( ( msgb = (char *) malloc(MaxMsgSize+1) ) ==  NULL ) 
+    if ( ( msgb = (char *) malloc(MaxMsgSize+1) ) ==  NULL )
     {
-      printf("%s: error allocating Rawmsg; exiting!\n", 
+      printf("%s: error allocating Rawmsg; exiting!\n",
 	  args_stacker->cmdname );
       exit( -1 );
     }
@@ -478,13 +481,13 @@ thr_ret MessageStacker( void *p )
     {
       /* Get a message from transport ring
        ************************************/
-      ret = tport_copyfrom( &InRegion, args_stacker->GetLogo, args_stacker->nLogo, 
+      ret = tport_copyfrom( &InRegion, args_stacker->GetLogo, args_stacker->nLogo,
 	  &reclogo, &recsize, msgb, MaxMsgSize, &inseq );
 
       switch (ret) {
 	case GET_NONE:
 	  /* Wait if no messages for us */
-	  sleep_ew(100); 
+	  sleep_ew(100);
 	  continue;
 	  break;
 	case GET_NOTRACK:
@@ -508,7 +511,7 @@ thr_ret MessageStacker( void *p )
 	      (int) reclogo.mod, (int)reclogo.type, args_stacker->InRing );
 	  printf("%s\n", errText);
 	  break;
-	/* only for tport_getmsg() 
+	/* only for tport_getmsg()
 	case GET_MISS:
 	  time(&now);
 	  snprintf( errText, STR_LEN_ERRTEXT-1, "%ld %hd missed msg(s) i%d m%d t%d in %s",
@@ -528,14 +531,14 @@ thr_ret MessageStacker( void *p )
       }
 
 
-      /* Process retrieved msg (ret==GET_OK,GET_MISS,GET_NOTRACK) 
+      /* Process retrieved msg (ret==GET_OK,GET_MISS,GET_NOTRACK)
        ***********************************************************/
       msgb[recsize] = '\0';
 
       /* put the message into the queue */
       WAIT_SPECIFIC_SEMAPHORE_EW(sema_CountAvail);
       RequestSpecificMutex(&mutex_OutQueue);
-      ret=enqueuering( &OutQueue, msgb, recsize, reclogo, inkey, inseq ); 
+      ret=enqueuering( &OutQueue, msgb, recsize, reclogo, inkey, inseq );
       ReleaseSpecificMutex(&mutex_OutQueue);
       POST_SPECIFIC_SEMAPHORE_EW(sema_CountBusy);
 
@@ -565,7 +568,7 @@ thr_ret MessageStacker( void *p )
 		  args_stacker->cmdname);
 	    }
 	  }
-	  continue; 
+	  continue;
       }
     } /* end of while */
 
@@ -580,7 +583,7 @@ thr_ret MessageStacker( void *p )
 
   }
 
-  /* we're quitting 
+  /* we're quitting
    *****************/
   dec_nStackerThread();
   KillSelfThread(); /* main thread will not restart us */
@@ -619,7 +622,7 @@ thr_ret MessagePrinter( void *p )
   errText[STR_LEN_ERRTEXT-1]=0;
 
   /* Allocate buffer for reading message from queue  */
-  if ( ( Wrmsg = (char *) malloc(MaxMsgSize+1) ) ==  NULL ) 
+  if ( ( Wrmsg = (char *) malloc(MaxMsgSize+1) ) ==  NULL )
   {
     printf("%s: error allocating Wrmsg in MessagePrinter; exiting!\n",
 	args_printer->cmdname );
@@ -628,7 +631,7 @@ thr_ret MessagePrinter( void *p )
 
   while (!testlck_flags_term(FLAG_TERM_REQ)) {   /* main loop */
 
-    /* Get message from queue 
+    /* Get message from queue
      *************************/
     WAIT_SPECIFIC_SEMAPHORE_EW(sema_CountBusy);
     RequestSpecificMutex(&mutex_OutQueue);
@@ -683,7 +686,7 @@ thr_ret MessagePrinter( void *p )
     /* Print any non-binary (non-waveform) message to screen
      *******************************************************/
     if( reclogo.type == args_printer->getutil_info->TypeTraceBuf2
-	|| reclogo.type == args_printer->getutil_info->TypeCompUA2 
+	|| reclogo.type == args_printer->getutil_info->TypeCompUA2
 	|| reclogo.type == args_printer->getutil_info->TypeTraceBuf
 	|| reclogo.type == args_printer->getutil_info->TypeCompUA ) {
 
@@ -716,7 +719,7 @@ thr_ret MessagePrinter( void *p )
   }   /* End of main loop */
 
 
-  /* we're quitting 
+  /* we're quitting
    *****************/
   setlck_flags_term(FLAG_TERM_THR_PRINTER);
   KillSelfThread(); /* main thread will not restart us */
@@ -724,7 +727,7 @@ thr_ret MessagePrinter( void *p )
 }
 
 
-/* set flags_bitmap by lock mechanism 
+/* set flags_bitmap by lock mechanism
  ***************************************************/
 void       setlck_flags_term(int flags_bitmap) {
   RequestSpecificMutex(&mutex_flags_term);
@@ -838,4 +841,3 @@ int remove_duplicated_ringname(char ringNames[MAX_NUM_OF_RINGS][MAX_RING_STR], i
 
   return ret;
 }
-
