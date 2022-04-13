@@ -1,15 +1,15 @@
 
-    /********************************************************************/
-    /*                                                                  */
-    /*                          transport.h                             */
-    /*                                                                  */
-    /*             Include file for transport functions                 */
-    /*                to access shared memory regions.                  */
-    /*                                                                  */
-    /* This include file requires that _LINUX, _SOLARIS, _WIN32, or _OS2*/
-    /* be defined in the makefile.                                      */
-    /*                                                                  */
-    /********************************************************************/
+/*
+ *
+ *                          transport.h
+ *
+ *             Include file for transport functions
+ *                to access shared memory regions.
+ *
+ * This include file requires that _LINUX, _SOLARIS, _WIN32, or _OS2
+ * be defined in the makefile.
+ *
+ */
 
 #ifndef TRANSPORT_H
 #define TRANSPORT_H
@@ -19,7 +19,7 @@
 #endif
 #include <platform.h>
 /*#include <startstop_lib.h>*/
-#define MAX_NEWTPROC 255 /* maximum number of processes recorded using new transport */
+#define MAX_NEWTPROC  256 /* maximum number of processes recorded using new transport */
 
 /* Structure types used in transport.c */
 
@@ -79,12 +79,12 @@ typedef struct {                     /***** sequence #, outpointer tracker ****/
         unsigned char    active;     /* 0 until msg of logo is found in memkey*/
 } MSG_TRACK;                         /*****************************************/
 
-typedef struct {                   /*********** shared memory flag **********/
-		SHM_HEAD		 head;
-volatile int			 nPidsToDie;/*     # of ids told to terminate       */
-volatile int             nPids;     /* # of ids we know about               */
-volatile int             pid[MAX_NEWTPROC];  /* ids of modules using new transport */
-} SHM_FLAG;                        /*****************************************/
+typedef struct {                      /*********** shared memory flag **********/
+		SHM_HEAD head;
+		int      npid;               /* # of ids we know about                */
+		int      base;               /* startstop's pids for mapping use      */
+		int      pid[MAX_NEWTPROC];  /* ids of modules using new transport    */
+} SHM_FLAG;                           /*****************************************/
 
 /* Definitions for tracking message logos (type,module,class) */
 #define WILD          0   /* wildcard for message descriptor       */

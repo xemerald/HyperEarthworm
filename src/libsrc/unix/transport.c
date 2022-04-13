@@ -54,6 +54,7 @@ static short    FlagInit = 1;          /* Flag initialization flag */
 /* */
 #define SHM_FLAG_DEFAULT_KEY 9999
 #define SHM_FLAG_RING       "FLAG_RING"
+#define SHM_FLAG_MAP_BASE    8   /*  */
 /* */
 #define FF_REMOVE   1
 #define FF_FLAG2ADD 2
@@ -85,6 +86,9 @@ static int  compare_msg_track( const void *, const void * );
 static void reset_key_shm( SHM_HEAD * );
 static RING_INDEX_T copy_msg_2_shm( SHM_HEAD *, RING_INDEX_T, const void *, const size_t );
 static RING_INDEX_T copy_shmmsg_2_buf( const SHM_HEAD *, RING_INDEX_T, void *, const size_t );
+static int func_flag_index( const SHM_FLAG *, const int, int (*)( const int, const int ) );
+static int condition_pid_equal( const int, const int );
+static int condition_pid_empty( const int, const int );
 /* SHM-related functions' prototypes */
 static SHM_HEAD *create_shm_region( int *, const long, const long );
 static SHM_HEAD *attach_shm_region( int *, const long );
@@ -749,13 +753,18 @@ void tport_createFlag()
 {
 	SHM_FLAG *faddr;
 
+/* */
 	if ( FlagInit == 0 )
 		return;
-
+/* */
 	shm_flag_key = GetKeyWithDefault( SHM_FLAG_RING, SHM_FLAG_DEFAULT_KEY );
 	tport_create( &smf_region, sizeof(SHM_FLAG), shm_flag_key );
+/* */
 	faddr = (SHM_FLAG *)smf_region.addr;
-	faddr->nPidsToDie = faddr->nPids = 0;
+	faddr->npid = 0;
+	faddr->base = getpid();
+	memset(faddr->pid, 0, sizeof(int) * MAX_NEWTPROC);
+
 	FlagInit = 0;
 
 	return;
@@ -809,8 +818,6 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 {
 	SHM_FLAG *smf;
 	int       i;
-	int       start   = 0;
-	int       stop    = 0;
 	int		  ret_val = 0;
 
 /* */
@@ -818,123 +825,100 @@ static int tport_flagop( SHM_INFO* region, const int pid, const int op )
 		tport_createFlag();
 	if ( (smf = (SHM_FLAG *)smf_region.addr) == NULL )
 		return 0;
-/* */
-	if ( wait_shm_region( &smf_region, op == FF_GETFLAG ? FLAG_LOCK_TRIES : 0 ) ) {
-		fprintf(stdout, "tport_flagop wait timed out; skip for next time!\n");
-		return 0;
-	}
 
 /* Define the range of scaning */
 	switch ( op ) {
-	case FF_REMOVE:
-	case FF_FLAG2ADD:
-	case FF_CLASSIFY:
-		stop = smf->nPids;
+	default:
 		break;
 	case FF_FLAG2DIE:
 		if ( pid == TERMINATE ) {
 		/* Terminate supercedes all individial process termination requests */
-			if ( smf->nPidsToDie == 0 || smf->pid[0] != TERMINATE ) {
-				smf->pid[smf->nPids++] = smf->pid[0];
-				smf->pid[0] = TERMINATE;
-				smf->nPidsToDie++;
-			}
+			if ( smf->head.flag != TERMINATE )
+				smf->head.flag = TERMINATE;
 		/* Old-style compatibility */
 			if ( region != NULL )
 				(region->addr)->flag = TERMINATE;
 		/* */
-			ret_val = TERMINATE;
+			return TERMINATE;
 		}
-		else if ( smf->nPidsToDie > 0 && smf->pid[0] == TERMINATE ) {
+		else if ( smf->head.flag == TERMINATE ) {
 		/* We've already been told to terminate everybody */
-			ret_val = pid;
-		}
-		else {
-			start = smf->nPidsToDie;
-			stop  = smf->nPids;
+			return pid;
 		}
 		break;
 	case FF_GETFLAG:
-		if ( smf->nPidsToDie > 0 && smf->pid[0] == TERMINATE ) {
-		/* All modules being terminated */
-			ret_val = TERMINATE;
-		}
-		else {
-			stop = smf->nPidsToDie;
-		}
+	/* All modules being terminated */
+		if ( smf->head.flag == TERMINATE )
+			return TERMINATE;
 		break;
 	}
 
-/* Scaning for the pid position */
-	for ( i = start; i < stop; i++ ) {
-		if ( smf->pid[i] == pid )
-			break;
+/* */
+	if ( op != FF_GETFLAG && op != FF_CLASSIFY ) {
+		if ( wait_shm_region( &smf_region, 0 ) ) {
+			fprintf(stdout, "tport_flagop wait timed out; skip for next time!\n");
+			return 0;
+		}
 	}
+/* Scaning for the pid position */
+	i = func_flag_index( smf, pid, condition_pid_equal );
 
 /* */
 	switch ( op ) {
 	case FF_REMOVE:
-	/* Found the pid in the list */
-		if ( i < stop ) {
-		/* This pid is also inside the dying list */
-			if ( i < smf->nPidsToDie ) {
-				smf->pid[i] = smf->pid[--smf->nPidsToDie];
-				i = smf->nPidsToDie;
-			}
-			smf->pid[i] = smf->pid[--smf->nPids];
-			ret_val = pid;
-		}
-		else {
+	/* Can't find the pid in the list */
+		if ( i < 0 ) {
 			ret_val = 0;
+		}
+	/* Found the pid in the list */
+		else {
+			smf->pid[i] = 0;
+			ret_val     = pid;
 		}
 		break;
 	case FF_FLAG2ADD:
-		if ( i >= stop ) {
+		if ( i < 0 ) {
 		/* If no room, we'll have to treat as old-style */
-			if ( smf->nPids < MAX_NEWTPROC )
-				smf->pid[smf->nPids++] = pid;
+			if ( smf->npid <= MAX_NEWTPROC ) {
+				if ( (i = func_flag_index( smf, pid, condition_pid_empty )) >= 0 ) {
+					smf->pid[i] = pid;
+					smf->npid++;
+				}
+			}
 		}
 		ret_val = pid;
 		break;
 	case FF_FLAG2DIE:
-		if ( ret_val == 0 ) {
-			if ( i >= stop ) {
-			/* It should be the old-style module */
-				if ( region != NULL )
-					(region->addr)->flag = pid;
-			}
-			else if ( i > smf->nPidsToDie ) {
-				smf->pid[i] = smf->pid[smf->nPidsToDie];
-				smf->pid[smf->nPidsToDie++] = pid;
-			}
-			ret_val = pid;
+		if ( i < 0 ) {
+		/* It should be the old-style module */
+			if ( region != NULL )
+				(region->addr)->flag = pid;
 		}
+		else if ( smf->pid[i] > 0 ) {
+			smf->pid[i] = -smf->pid[i];
+		}
+		ret_val = pid;
 		break;
 	case FF_GETFLAG:
-		if ( ret_val != TERMINATE ) {
-			if ( i >= stop ) {
-			/* Can't find the pid within dying list, comfirm this is not an old-style module */
-				stop = smf->nPids;
-				for ( ; i < stop; i++ ) {
-					if ( smf->pid[i] == pid )
-						break;
-				}
-			/* If pid unknown, treat as an old-style module */
-				ret_val = (i >= stop && region != NULL) ? (region->addr)->flag : 0;
-			}
-			else {
-			/* Found it within dying list */
-				ret_val = pid;
-			}
-		}
+	/* If pid unknown, treat as an old-style module */
+		if ( i < 0 )
+			ret_val = region != NULL ? (region->addr)->flag : 0;
+	/* Found it within dying list */
+		else if ( smf->pid[i] < 0 )
+			ret_val = pid;
 		break;
 	case FF_CLASSIFY:
-		ret_val = i >= stop ? 0 : (i >= smf->nPidsToDie ? 1 : 2);
+		if ( i >= 0 )
+			ret_val = smf->pid[i] < 0 ? 2 : 1;
+	default:
+		break;
 	}
 
 /* */
-	if ( release_shm_region( &smf_region ) )
-		tport_syserr( "tport_flagop flag ->release", smf_region.key );
+	if ( op != FF_GETFLAG && op != FF_CLASSIFY ) {
+		if ( release_shm_region( &smf_region ) )
+			tport_syserr( "tport_flagop flag ->release", smf_region.key );
+	}
 
 	return ret_val;
 }
@@ -1380,6 +1364,46 @@ static RING_INDEX_T copy_shmmsg_2_buf(
 	return keyout;
 }
 
+/*
+ *
+ */
+static int func_flag_index( const SHM_FLAG *smf, const int pid, int (*condition)( const int, const int ) )
+{
+	int index;
+	int step;
+	int _pid = pid;
+
+/* */
+	_pid -= smf->base;
+	if ( _pid < 0 )
+		_pid = -_pid;
+/* */
+	for ( step = 0; step < SHM_FLAG_MAP_BASE; step++ ) {
+		_pid += step;
+		for ( index = _pid % SHM_FLAG_MAP_BASE; index < MAX_NEWTPROC; index += SHM_FLAG_MAP_BASE ) {
+			if ( condition( smf->pid[index], pid ) )
+				return index;
+		}
+	}
+
+	return -1;
+}
+
+/*
+ *
+ */
+static int condition_pid_equal( const int pid_in_list, const int pid )
+{
+	return (abs(pid_in_list) == pid);
+}
+
+/*
+ *
+ */
+static int condition_pid_empty( const int pid_in_list, const int pid )
+{
+	return (!pid_in_list && pid);
+}
 
 #ifdef _USE_POSIX_SHM
 /*
