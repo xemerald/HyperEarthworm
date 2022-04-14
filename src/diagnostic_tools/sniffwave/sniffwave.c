@@ -730,7 +730,7 @@ static void proc_trace_data(
 				for ( i = 0; i < trh->nsamp; i++, fdata++ ) {
 				/* */
 					if ( data_flag ) {
-						fprintf(stdout, "%6.6f ", *fdata);
+						fprintf(stdout, "%6.4f ", *fdata);
 						if ( i % 10 == 9 )
 							fprintf(stdout, "\n");
 					}
@@ -749,7 +749,7 @@ static void proc_trace_data(
 				for ( i = 0; i < trh->nsamp; i++, ddata++ ) {
 				/* */
 					if ( data_flag ) {
-						fprintf(stdout, "%6.6lf ", *ddata);
+						fprintf(stdout, "%6.4lf ", *ddata);
 						if ( i % 10 == 9 )
 							fprintf(stdout, "\n");
 					}
