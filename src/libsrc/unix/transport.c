@@ -825,9 +825,11 @@ static void tport_syserr( const char *msg, const long key )
  */
 static int tport_flagop( SHM_INFO *region, const int pid, const int op )
 {
+	static int *pid_ptr = NULL;
+
 	SHM_FLAG *smf;
-	int      *pid_ptr = NULL;
-	int		  ret_val = 0;
+	int       _pid    = 0;
+	int       ret_val = 0;
 
 /* */
 	if ( FlagInit )
@@ -873,7 +875,10 @@ static int tport_flagop( SHM_INFO *region, const int pid, const int op )
 		}
 	}
 /* Scaning for the pid position */
-	pid_ptr = bsearch(&pid, smf->pid, smf->npid, sizeof(int), compare_flag_pid);
+	if ( !pid_ptr || abs(_pid = *pid_ptr) != pid ) {
+		if ( (pid_ptr = bsearch(&pid, smf->pid, smf->npid, sizeof(int), compare_flag_pid)) )
+			_pid = *pid_ptr;
+	}
 /* */
 	switch ( op ) {
 	case FF_REMOVE:
@@ -906,8 +911,8 @@ static int tport_flagop( SHM_INFO *region, const int pid, const int op )
 			if ( region != NULL )
 				(region->addr)->flag = pid;
 		}
-		else if ( *pid_ptr > 0 ) {
-			*pid_ptr = -(*pid_ptr);
+		else if ( _pid > 0 ) {
+			*pid_ptr = -_pid;
 		}
 		ret_val = pid;
 		break;
@@ -916,12 +921,12 @@ static int tport_flagop( SHM_INFO *region, const int pid, const int op )
 		if ( !pid_ptr )
 			ret_val = region != NULL ? (region->addr)->flag : 0;
 	/* Found it within dying list */
-		else if ( *pid_ptr < 0 )
+		else if ( -_pid == pid )
 			ret_val = pid;
 		break;
 	case FF_CLASSIFY:
-		if ( pid_ptr )
-			ret_val = *pid_ptr < 0 ? 2 : 1;
+		if ( abs(_pid) == pid )
+			ret_val = _pid < 0 ? 2 : 1;
 	default:
 		break;
 	}
