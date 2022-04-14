@@ -69,13 +69,13 @@
  *
  *  Byte swapping functions
  */
- 
-/* Make sure one of the platforms is defined properly... */ 
-#ifndef _INTEL 
- #ifndef _SPARC 
-  #error _INTEL and _SPARC are both undefined 
- #endif 
-#endif 
+
+/* Make sure one of the platforms is defined properly... */
+#ifndef _INTEL
+ #ifndef _SPARC
+  #error _INTEL and _SPARC are both undefined
+ #endif
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,7 +167,7 @@ int WaveMsgMakeLocal( TRACE_HEADER* wvmsg )
 *       Changes the 'datatype' field in the message header          *
 *       Returns -1 if unknown data type.                            *
 *       Returns -1 if _SPARC or _INTEL not defined.                 *
-*       Returns -1 if more than max number of samples for tbuf      * 
+*       Returns -1 if more than max number of samples for tbuf      *
 *	 size allowed  2000 or 1000 depending on data type          *
 *       Returns -2 if checksumish calculation of header fails.      *
 *       Elsewise (SUCCESS) returns 0.                               *
@@ -183,7 +183,7 @@ int WaveMsg2MakeLocal( TRACE2_HEADER* wvmsg )
 *       Changes the 'datatype' field in the message header          *
 *       Returns -1 if unknown data type.                            *
 *       Returns -1 if _SPARC or _INTEL not defined.                 *
-*       Returns -1 if more than max number of samples for tbuf      * 
+*       Returns -1 if more than max number of samples for tbuf      *
 *	 size allowed  2000 or 1000 depending on data type          *
 *       Returns -2 if checksumish calculation of header fails.      *
 *       Elsewise (SUCCESS) returns 0.                               *
@@ -198,12 +198,14 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
 {
    int    dataSize;  /* flag telling us how many bytes in the data */
    char   byteOrder;
-   int*   intPtr;
-   short* shortPtr;
+   int    *intPtr;
+   short  *shortPtr;
+   float  *floatPtr;
+   double *doublePtr;
    int    i;
    int    nsamp;
    double samprate,starttime,endtime;
-   double tShouldEnd; 
+   double tShouldEnd;
    double dFudgeFactor;
 
    /* See what sort of data it carries
@@ -225,12 +227,28 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
    {
         dataSize=2; byteOrder='i';
    }
+   else if ( strcmp(wvmsg->datatype, "t4")==0)
+   {
+		dataSize=4; byteOrder='t';
+   }
+   else if ( strcmp(wvmsg->datatype, "f4")==0)
+   {
+		dataSize=4; byteOrder='f';
+   }
+   else if ( strcmp(wvmsg->datatype, "t8")==0)
+   {
+		dataSize=8; byteOrder='t';
+   }
+   else if ( strcmp(wvmsg->datatype, "f8")==0)
+   {
+		dataSize=8; byteOrder='f';
+   }
    else
         return(-1); /* We don't know this message type*/
 
    /* SWAP the header (if neccessary) */
 #if defined( _SPARC )
-   if (byteOrder =='i')
+   if (byteOrder =='i' || byteOrder =='f')
    {
         /* swap the header
         *****************/
@@ -249,7 +267,7 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
    }
 
 #elif defined( _INTEL )
-   if (byteOrder =='s')
+   if (byteOrder =='s' || byteOrder =='t')
    {
         /* swap the header
         *****************/
@@ -277,7 +295,7 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
      return(-1);
   }
 
-/* Perform a CheckSumish kind of calculation on the header 
+/* Perform a CheckSumish kind of calculation on the header
  * ensure that the tracebuf ends within 5 samples of the given endtime.
  * DK 2002/03/18
  *********************************************************************/
@@ -297,7 +315,7 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
  * we protect ourselves from complete garbage, so that we don't segfault
  * when allocating samples based on a bad nsamp
  ***********************************************************************/
-   if( endtime < (tShouldEnd-dFudgeFactor) ||  
+   if( endtime < (tShouldEnd-dFudgeFactor) ||
        endtime > (tShouldEnd+dFudgeFactor)    )
    {
       logit("e","WaveMsg2MakeLocal: packet from %s.%s.%s.%s has inconsistent "
@@ -311,7 +329,7 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
                 "of computed.endtime!\n" );
       return(-2);
    }
-  
+
    /* SWAP the data (if neccessary) */
 #if defined( _SPARC )
 
@@ -330,6 +348,18 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
         if(dataSize==2) strcpy(wvmsg->datatype,"s2");
         if(dataSize==4) strcpy(wvmsg->datatype,"s4");
    }
+	else if ( byteOrder == 'f' ) {
+	/* Swap the data.  */
+		floatPtr = (float *)((char*)wvmsg + sizeof(TRACE2_HEADER));
+		doublePtr = (double *)((char*)wvmsg + sizeof(TRACE2_HEADER));
+		for ( i = 0; i < nsamp; i++ ) {
+			if ( dataSize == 4 ) SwapFloat( &(floatPtr[i]) );
+			if ( dataSize == 8 ) SwapDouble(  &(doublePtr[i])  );
+		}
+	/* Re-write the data type field in the message */
+		if ( dataSize == 4 ) strcpy(wvmsg->datatype,"t4");
+		if ( dataSize == 8 ) strcpy(wvmsg->datatype,"t8");
+	}
 
 #elif defined( _INTEL )
 
@@ -348,6 +378,18 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER* wvmsg, char version )
         if(dataSize==2) strcpy(wvmsg->datatype,"i2");
         if(dataSize==4) strcpy(wvmsg->datatype,"i4");
    }
+	else if ( byteOrder == 't' ) {
+	/* Swap the data.  */
+		floatPtr = (float *)((char*)wvmsg + sizeof(TRACE2_HEADER));
+		doublePtr = (double *)((char*)wvmsg + sizeof(TRACE2_HEADER));
+		for ( i = 0; i < nsamp; i++ ) {
+			if ( dataSize == 4 ) SwapFloat( &(floatPtr[i]) );
+			if ( dataSize == 8 ) SwapDouble(  &(doublePtr[i])  );
+		}
+	/* Re-write the data type field in the message */
+		if ( dataSize == 4 ) strcpy(wvmsg->datatype,"f4");
+		if ( dataSize == 8 ) strcpy(wvmsg->datatype,"f8");
+	}
 #else
    printf( "WaveMsg2MakeLocal warning: _INTEL and _SPARC are both undefined." );
 #endif
