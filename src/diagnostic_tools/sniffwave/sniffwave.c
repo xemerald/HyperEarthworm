@@ -23,7 +23,8 @@
 #include <string.h>
 #include <signal.h>
 #include <search.h>
-
+#include <float.h>
+/* */
 #include <earthworm.h>
 #include <transport.h>
 #include <swap.h>
@@ -143,8 +144,8 @@ int main( int argc, char **argv )
 	double        start_time = -1.0;
 	double        end_time   = -1.0;
 	time_t        monitor_start_time = 0;
-	unsigned long packet_total = 0;
-	unsigned long packet_total_size = 0;
+	unsigned long packet_total       = 0;
+	unsigned long packet_total_size  = 0;
 /* */
 	void                  *root = NULL;
 	SCNL_LAST_PACKET_TIME *slpt = NULL; /* Pointer to the last scnl and packet */
@@ -220,16 +221,13 @@ int main( int argc, char **argv )
 	}
 	fprintf(stderr, "sniffwave: inRing flushed %ld packets of %ld bytes total.\n", packet_total, packet_total_size);
 /* */
-	if ( LiveSec > 0 ) {
-		monitor_start_time = time(0);
-		packet_total = packet_total_size = 0;
-		start_time = 0.0;
-	}
+	monitor_start_time = time(0);
+	packet_total = packet_total_size = 0;
 /* */
 	while (
 		!Terminate &&
 		tport_getflag(&region) != TERMINATE &&
-		(!(LiveSec > 0) || (time(0) - monitor_start_time < LiveSec))
+		(!(LiveSec > 0) || (time(0) - monitor_start_time) < LiveSec)
 	) {
 	/* */
 		rc = tport_copyfrom(&region, getlogo, nLogo, &gotlogo, &gotsize, buffer, MAX_TRACEBUF_SIZ, &seq);
@@ -278,8 +276,10 @@ int main( int argc, char **argv )
 			}
 		/* */
 			if ( LiveSec > 0 ) {
-				if ( start_time < 0.0 )
+				if ( start_time < 0.0 ) {
 					start_time = trh->starttime;
+					printf("Get start time\n");
+				}
 				end_time = trh->endtime;
 				packet_total++;
 				packet_total_size += gotsize;
@@ -356,7 +356,7 @@ int main( int argc, char **argv )
 		fprintf(stdout, "\t             Bytes of data:  %ld\n", packet_total_size);
 		fprintf(stdout, "\t Number of Packets of data:  %ld\n", packet_total);
 	}
-	if ( LiveSec > 0 && start_time < 0.0 )  {
+	else if ( LiveSec > 0 )  {
 		fprintf(
 			stdout, "Sniffed %s for %d seconds and found no packets matching desired SCN[L] filter.\n",
 			argv[1], LiveSec
@@ -675,12 +675,17 @@ static void proc_trace_data(
 	const unsigned char type, const TRACE2_HEADER *trh, const int data_flag, const int statis_flag
 ) {
 	int      i = 0;
+	int      floating = 0;
 /* */
 	int16_t *sdata = (int16_t *)(trh + 1);
 	int32_t *ldata = (int32_t *)(trh + 1);
+	float   *fdata = (float *)(trh + 1);
+	double  *ddata = (double *)(trh + 1);
 /* */
-	long   max = 0;
-	long   min = 0;
+	int    max = 0;
+	double dmax = 0;
+	int    min = 0;
+	double dmin = 0;
 	double avg = 0.0;
 
 	if ( data_flag || statis_flag ) {
@@ -721,6 +726,44 @@ static void proc_trace_data(
 					}
 				}
 			}
+			else if ( !strcmp(trh->datatype, "t4") || !strcmp(trh->datatype, "f4") ) {
+				for ( i = 0; i < trh->nsamp; i++, fdata++ ) {
+				/* */
+					if ( data_flag ) {
+						fprintf(stdout, "%6.6f ", *fdata);
+						if ( i % 10 == 9 )
+							fprintf(stdout, "\n");
+					}
+				/* */
+					if ( statis_flag ) {
+						if ( *fdata > max || fabs(dmax - 0.0) < DBL_EPSILON )
+							dmax = *fdata;
+						if ( *fdata < min || fabs(dmin - 0.0) < DBL_EPSILON )
+							dmin = *fdata;
+						avg += *fdata;
+					}
+				}
+				floating = 1;
+			}
+			else if ( !strcmp(trh->datatype, "t8") || !strcmp(trh->datatype, "f8") ) {
+				for ( i = 0; i < trh->nsamp; i++, ddata++ ) {
+				/* */
+					if ( data_flag ) {
+						fprintf(stdout, "%6.6lf ", *ddata);
+						if ( i % 10 == 9 )
+							fprintf(stdout, "\n");
+					}
+				/* */
+					if ( statis_flag ) {
+						if ( *ddata > max || fabs(dmax - 0.0) < DBL_EPSILON )
+							dmax = *ddata;
+						if ( *ddata < min || fabs(dmin - 0.0) < DBL_EPSILON )
+							dmin = *ddata;
+						avg += *ddata;
+					}
+				}
+				floating = 1;
+			}
 			else {
 				fprintf(stdout, "Unknown datatype %s\n", trh->datatype);
 			}
@@ -729,16 +772,25 @@ static void proc_trace_data(
 			fprintf(stdout, "Data values compressed\n");
 		}
 	/* */
-		fprintf(stdout, "\n");
-	/* */
 		if ( i && statis_flag ) {
 			avg = avg / trh->nsamp;
-			fprintf(stdout, "Raw Data statistics max=%ld min=%ld avg=%f\n", max, min, avg);
-			fprintf(
-				stdout, "DC corrected statistics max=%f min=%f spread=%ld\n\n",
-				(double)(max - avg), (double)(min - avg), labs(max - min)
-			);
+			if ( floating ) {
+				fprintf(stdout, "Raw Data statistics max=%lf min=%lf avg=%lf\n", dmax, dmin, avg);
+				fprintf(
+					stdout, "DC corrected statistics max=%lf min=%lf spread=%lf\n",
+					(double)(dmax - avg), (double)(dmin - avg), fabs(dmax - dmin)
+				);
+			}
+			else {
+				fprintf(stdout, "Raw Data statistics max=%d min=%d avg=%lf\n", max, min, avg);
+				fprintf(
+					stdout, "DC corrected statistics max=%lf min=%lf spread=%d\n",
+					(double)(max - avg), (double)(min - avg), abs(max - min)
+				);
+			}
 		}
+	/* */
+		fprintf(stdout, "\n");
 		fflush(stdout);
 	}
 
