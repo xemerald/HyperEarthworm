@@ -87,9 +87,6 @@ static void reset_key_shm( SHM_HEAD * );
 static RING_INDEX_T copy_msg_2_shm( SHM_HEAD *, RING_INDEX_T, const void *, const size_t );
 static RING_INDEX_T copy_shmmsg_2_buf( const SHM_HEAD *, RING_INDEX_T, void *, const size_t );
 static int compare_flag_pid( const void *, const void * );
-static int get_flag_index( const SHM_FLAG *, const int, int (*)( const int, const int ) );
-static inline int condition_pid_equal( const int, const int );
-static inline int condition_pid_empty( const int, const int );
 /* SHM-related functions' prototypes */
 static SHM_HEAD *create_shm_region( int *, const long, const long );
 static SHM_HEAD *attach_shm_region( int *, const long );
@@ -1389,31 +1386,6 @@ static RING_INDEX_T copy_shmmsg_2_buf(
 }
 
 /*
- *
- */
-static int get_flag_index( const SHM_FLAG *smf, const int pid, int (*condition)( const int, const int ) )
-{
-	int index;
-	int step;
-	int _pid = pid;
-
-/* */
-	_pid -= smf->base;
-	if ( _pid < 0 )
-		_pid = -_pid;
-/* */
-	for ( step = 0; step < SHM_FLAG_MAP_BASE; step++ ) {
-		_pid += step;
-		for ( index = _pid % SHM_FLAG_MAP_BASE; index < MAX_NEWTPROC; index += SHM_FLAG_MAP_BASE ) {
-			if ( condition( smf->pid[index], pid ) )
-				return index;
-		}
-	}
-
-	return -1;
-}
-
-/*
  * compare_flag_pid() - Compare function for flag pid list sorting. We need to make it in a decending
  *                      order so we make a > b return less than zero.
  */
@@ -1428,22 +1400,6 @@ static int compare_flag_pid( const void *pid_1, const void *pid_2 )
 		return -1;
 	else
 		return 1;
-}
-
-/*
- *
- */
-static inline int condition_pid_equal( const int pid_in_list, const int pid )
-{
-	return (abs(pid_in_list) == pid);
-}
-
-/*
- *
- */
-static inline int condition_pid_empty( const int pid_in_list, const int pid )
-{
-	return (!pid_in_list && pid);
 }
 
 #ifdef _USE_POSIX_SHM
