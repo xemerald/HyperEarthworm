@@ -259,7 +259,7 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER *wvmsg, char version )
 				SwapUint32( int_ptr );
 		}
 	/* Re-write the data type field in the message */
-		wvmsg->datatype[0] = _ibyte_order;
+		wvmsg->datatype[0] = loc_ibyte_order;
 		if ( data_size == 2 )
 			wvmsg->datatype[1] = '2';
 		else if ( data_size == 4 )
@@ -276,7 +276,7 @@ static int WaveMsgVersionMakeLocal( TRACE2X_HEADER *wvmsg, char version )
 				SwapDouble( double_ptr );
 		}
 	/* Re-write the data type field in the message */
-		wvmsg->datatype[0] = _fbyte_order;
+		wvmsg->datatype[0] = loc_fbyte_order;
 		if ( data_size == 4 )
 			wvmsg->datatype[1] = '4';
 		else if ( data_size == 8 )
