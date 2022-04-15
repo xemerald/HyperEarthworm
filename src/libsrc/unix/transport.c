@@ -930,15 +930,8 @@ static int tport_flagop( SHM_INFO *region, const int pid, const int op )
 
 /* Release the flag ring */
 	if ( op != FF_GETFLAG && op != FF_CLASSIFY ) {
-		int i;
 		if ( release_shm_region( &smf_region ) )
 			tport_syserr( "tport_flagop flag ->release", smf_region.key );
-		printf("total %d\n", smf->npid);
-		for ( i = 0; i < MAX_NEWTPROC; i++ ) {
-			printf("%d ", smf->pid[i]);
-			if ( i && !(i % 8) )
-				printf("\n");
-		}
 	}
 
 	return ret_val;
