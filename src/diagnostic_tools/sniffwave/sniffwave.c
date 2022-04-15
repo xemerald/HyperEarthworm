@@ -23,7 +23,6 @@
 #include <string.h>
 #include <signal.h>
 #include <search.h>
-#include <float.h>
 /* */
 #include <earthworm.h>
 #include <transport.h>
@@ -66,8 +65,12 @@ static void proc_gap_and_overlap( const TRACE2_HEADER *, SCNL_LAST_PACKET_TIME *
  *      Data (now - last_scnl_time)
  *      Feed (now - last_packet_time) */
 static void proc_feed_latencies( const TRACE2_HEADER *, SCNL_LAST_PACKET_TIME * );
-static void proc_trace_data( const unsigned char, const TRACE2_HEADER *, const int, const int );
+static void proc_trace_data( const unsigned char, const TRACE2_HEADER * );
 /* */
+static void print_int_data( const int, const int );
+static void print_double_data( const double, const int );
+static void statis_int_data( const int, int *, int *, double * );
+static void statis_double_data( const double, double *, double *, double * );
 static void free_node( void * );
 static int  compare_scnl( const void *, const void * );
 static void end_process_signal( int );
@@ -276,10 +279,8 @@ int main( int argc, char **argv )
 			}
 		/* */
 			if ( LiveSec > 0 ) {
-				if ( start_time < 0.0 ) {
+				if ( start_time < 0.0 )
 					start_time = trh->starttime;
-					printf("Get start time\n");
-				}
 				end_time = trh->endtime;
 				packet_total++;
 				packet_total_size += gotsize;
@@ -339,7 +340,8 @@ int main( int argc, char **argv )
 		/* Compute and print latency for data and packet */
 			proc_feed_latencies( trh, slpt );
 		/* */
-			proc_trace_data( gotlogo.type, trh, DataFlag, StatFlag );
+			if ( DataFlag || StatFlag )
+				proc_trace_data( gotlogo.type, trh );
 		} /* end of process this tracebuf if */
 	} /* end of while loop */
 /* */
@@ -671,9 +673,7 @@ static void proc_feed_latencies( const TRACE2_HEADER *trh, SCNL_LAST_PACKET_TIME
 /*
  *
  */
-static void proc_trace_data(
-	const unsigned char type, const TRACE2_HEADER *trh, const int data_flag, const int statis_flag
-) {
+static void proc_trace_data( const unsigned char type, const TRACE2_HEADER *trh ) {
 	int      i = 0;
 	int      floating = 0;
 /* */
@@ -688,111 +688,121 @@ static void proc_trace_data(
 	double dmin = 0;
 	double avg = 0.0;
 
-	if ( data_flag || statis_flag ) {
-		if ( WAVE_IS_TRACEBUF( type ) ) {
-			if ( !strcmp(trh->datatype, "s2") || !strcmp(trh->datatype, "i2") ) {
-				for ( i = 0; i < trh->nsamp; i++, sdata++ ) {
-				/* */
-					if ( data_flag ) {
-						fprintf(stdout, "%6hd ", *sdata);
-						if ( i % 10 == 9 )
-							fprintf(stdout, "\n");
-					}
-				/* */
-					if ( statis_flag ) {
-						if ( *sdata > max || max == 0 )
-							max = *sdata;
-						if ( *sdata < min || min == 0 )
-							min = *sdata;
-						avg += *sdata;
-					}
-				}
+	if ( WAVE_IS_TRACEBUF( type ) ) {
+		if ( !strcmp(trh->datatype, "s2") || !strcmp(trh->datatype, "i2") ) {
+			for ( i = 0, max = *sdata, min = *sdata; i < trh->nsamp; i++, sdata++ ) {
+				if ( DataFlag )
+					print_int_data( *sdata, i );
+				if ( StatFlag )
+					statis_int_data( *sdata, &max, &min, &avg );
 			}
-			else if ( !strcmp(trh->datatype, "s4") || !strcmp(trh->datatype, "i4") ) {
-				for ( i = 0; i < trh->nsamp; i++, ldata++ ) {
-				/* */
-					if ( data_flag ) {
-						fprintf(stdout, "%6d ", *ldata);
-						if ( i % 10 == 9 )
-							fprintf(stdout, "\n");
-					}
-				/* */
-					if ( statis_flag ) {
-						if ( *ldata > max || max == 0 )
-							max = *ldata;
-						if ( *ldata < min || min == 0 )
-							min = *ldata;
-						avg += *ldata;
-					}
-				}
+		}
+		else if ( !strcmp(trh->datatype, "s4") || !strcmp(trh->datatype, "i4") ) {
+			for ( i = 0, max = *ldata, min = *ldata; i < trh->nsamp; i++, ldata++ ) {
+				if ( DataFlag )
+					print_int_data( *ldata, i );
+				if ( StatFlag )
+					statis_int_data( *ldata, &max, &min, &avg );
 			}
-			else if ( !strcmp(trh->datatype, "t4") || !strcmp(trh->datatype, "f4") ) {
-				for ( i = 0; i < trh->nsamp; i++, fdata++ ) {
-				/* */
-					if ( data_flag ) {
-						fprintf(stdout, "%6.4f ", *fdata);
-						if ( i % 10 == 9 )
-							fprintf(stdout, "\n");
-					}
-				/* */
-					if ( statis_flag ) {
-						if ( *fdata > max || fabs(dmax - 0.0) < DBL_EPSILON )
-							dmax = *fdata;
-						if ( *fdata < min || fabs(dmin - 0.0) < DBL_EPSILON )
-							dmin = *fdata;
-						avg += *fdata;
-					}
-				}
-				floating = 1;
+		}
+		else if ( !strcmp(trh->datatype, "t4") || !strcmp(trh->datatype, "f4") ) {
+			for ( i = 0, dmax = *fdata, dmin = *fdata; i < trh->nsamp; i++, fdata++ ) {
+				if ( DataFlag )
+					print_double_data( *fdata, i );
+				if ( StatFlag )
+					statis_double_data( *fdata, &dmax, &dmin, &avg );
 			}
-			else if ( !strcmp(trh->datatype, "t8") || !strcmp(trh->datatype, "f8") ) {
-				for ( i = 0; i < trh->nsamp; i++, ddata++ ) {
-				/* */
-					if ( data_flag ) {
-						fprintf(stdout, "%6.4lf ", *ddata);
-						if ( i % 10 == 9 )
-							fprintf(stdout, "\n");
-					}
-				/* */
-					if ( statis_flag ) {
-						if ( *ddata > max || fabs(dmax - 0.0) < DBL_EPSILON )
-							dmax = *ddata;
-						if ( *ddata < min || fabs(dmin - 0.0) < DBL_EPSILON )
-							dmin = *ddata;
-						avg += *ddata;
-					}
-				}
-				floating = 1;
+			floating = 1;
+		}
+		else if ( !strcmp(trh->datatype, "t8") || !strcmp(trh->datatype, "f8") ) {
+			for ( i = 0, dmax = *ddata, dmin = *ddata; i < trh->nsamp; i++, ddata++ ) {
+				if ( DataFlag )
+					print_double_data( *ddata, i );
+				if ( StatFlag )
+					statis_double_data( *ddata, &dmax, &dmin, &avg );
 			}
-			else {
-				fprintf(stdout, "Unknown datatype %s\n", trh->datatype);
-			}
+			floating = 1;
 		}
 		else {
-			fprintf(stdout, "Data values compressed\n");
+			fprintf(stdout, "Unknown datatype %s\n", trh->datatype);
 		}
-	/* */
-		if ( i && statis_flag ) {
-			avg = avg / trh->nsamp;
-			if ( floating ) {
-				fprintf(stdout, "Raw Data statistics max=%lf min=%lf avg=%lf\n", dmax, dmin, avg);
-				fprintf(
-					stdout, "DC corrected statistics max=%lf min=%lf spread=%lf\n",
-					(double)(dmax - avg), (double)(dmin - avg), fabs(dmax - dmin)
-				);
-			}
-			else {
-				fprintf(stdout, "Raw Data statistics max=%d min=%d avg=%lf\n", max, min, avg);
-				fprintf(
-					stdout, "DC corrected statistics max=%lf min=%lf spread=%d\n",
-					(double)(max - avg), (double)(min - avg), abs(max - min)
-				);
-			}
-		}
-	/* */
-		fprintf(stdout, "\n");
-		fflush(stdout);
 	}
+	else {
+		fprintf(stdout, "Data values compressed\n");
+	}
+/* */
+	if ( i && StatFlag ) {
+		avg = avg / trh->nsamp;
+		if ( floating ) {
+			fprintf(stdout, "Raw Data statistics max=%lf min=%lf avg=%lf\n", dmax, dmin, avg);
+			fprintf(
+				stdout, "DC corrected statistics max=%lf min=%lf spread=%lf\n",
+				(double)(dmax - avg), (double)(dmin - avg), fabs(dmax - dmin)
+			);
+		}
+		else {
+			fprintf(stdout, "Raw Data statistics max=%d min=%d avg=%lf\n", max, min, avg);
+			fprintf(
+				stdout, "DC corrected statistics max=%lf min=%lf spread=%d\n",
+				(double)(max - avg), (double)(min - avg), abs(max - min)
+			);
+		}
+	}
+/* */
+	fprintf(stdout, "\n");
+	fflush(stdout);
+
+	return;
+}
+
+/*
+ *
+ */
+static void print_int_data( const int input, const int seq )
+{
+	fprintf(stdout, "%6d ", input);
+	if ( seq % 10 == 9 )
+		fprintf(stdout, "\n");
+
+	return;
+}
+
+/*
+ *
+ */
+static void print_double_data( const double input, const int seq )
+{
+	fprintf(stdout, "%6.4lf ", input);
+	if ( seq % 10 == 9 )
+		fprintf(stdout, "\n");
+
+	return;
+}
+
+/*
+ *
+ */
+static void statis_int_data( const int input, int *max, int *min, double *avg )
+{
+	if ( input > *max )
+		*max = input;
+	if ( input < *min )
+		*min = input;
+	*avg += input;
+
+	return;
+}
+
+/*
+ *
+ */
+static void statis_double_data( const double input, double *max, double *min, double *avg )
+{
+	if ( input > *max )
+		*max = input;
+	if ( input < *min )
+		*min = input;
+	*avg += input;
 
 	return;
 }
