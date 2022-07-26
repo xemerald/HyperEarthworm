@@ -1,0 +1,42 @@
+This is a newer version of tankplayer, as of 09 March 2006.
+Main changes are:
+Added support for TypeTraceBuf2, which was missing from the get_time function
+that is used to determine the time of the packet from the trace header.
+
+Changed the program's behavior when Tracebuf2 packets are encountered with
+VERSION fields that don't match those compiled into the program.  Previously
+the program always quit at the first sign of a tracebuf with a mismatched version
+number.  Now depending on the value of the IgnoreTBVersionNumbers config command,
+the program attempts to parse and either play or skip the message based on 
+the value of the command.  (TRUE = play, FALSE= ignore).
+
+Added a log message when tankplayer comes across a large delay between packets.
+
+Modified the sleep code that executes between packets, so that it sleeps 
+in small intervals and continues to issue heartbeats even during a large gap.
+Added additional debugging info for dealing with problems encountered in tracebuf files.
+
+David K.
+
+
+This is a new version of tankplayer, as of 31 March 1999.
+The two main changes are:
+
+1. An optional command SendLate has been added. If it is present with a
+   number, then packets will be timestamped this many seconds before the
+   current time. What happens is that the time of the first trace packet is
+   compared with the current time. This difference and the SendLate value are
+   used to compute an offset that is applied to all packet timestamps. In this
+   way, the relative times of all packets in one tank is maintained. Note that
+   this program does NOT change the contents of the tank file. The timestamps
+   are changed as they are placed on the WAVE_RING.  If SendLate is absent
+   from the param file, the trace packet timestamps are not changed on
+   playback.  The intent of this change is to allow testing of carlsubtrig,
+   which needs trace data with timestamps near current (system) time.
+
+2. The main loop for playing back trace packets has been changed to speed it
+   up. Under some conditions the old tankplayer was taking about 1.5 sec to
+   play back 1 sec of data.
+
+Pete Lombard
+UW Geophysics

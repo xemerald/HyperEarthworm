@@ -57,6 +57,7 @@
 #
 
 SUBFOLDERS = \
+	archiving \
 	diagnostic_tools \
 	system_control
 
