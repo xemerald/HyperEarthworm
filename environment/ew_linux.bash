@@ -21,7 +21,7 @@ USE_CC_BITS=true
 
 # Use value from elsewhere IF defined (eg from .bashrc)
 # otherwise use the value after the :-
-export EW_HOME="${EW_INSTALL_HOME:-/home/ew/}"
+export EW_HOME="${EW_INSTALL_HOME:-/home/benyang/ew/SourceCode}"
 export EW_VERSION="${EW_INSTALL_VERSION:-HyperEarthworm}"
 EW_RUN_DIR="${EW_RUN_DIR:-${EW_HOME}/run}"
 # Or set your own values directly
@@ -87,13 +87,13 @@ if [ "${CC}" = "gcc" ] ; then
    # Set initial defaults for the gmake implicit .c.o and .cpp.o target rules
 
    # C compiler flags (also used for ld flags)
-   export CFLAGS="${TARGET} -g -pthread ${WARNFLAGS}"
+   export CFLAGS="${TARGET} -fcommon -g -pthread ${WARNFLAGS}"
    # C++ compiler flags
    export CXXFLAGS="${CFLAGS}"
    # C preprocessor defs and includes
-   export CPPFLAGS="-D_LINUX -Dlinux -D_INTEL -D_USE_SCHED -D_USE_PTHREADS -D_USE_TERMIOS -D_FILE_OFFSET_BITS=64 -I${EW_HOME}/${EW_VERSION}/include"
+   #export CPPFLAGS="-D_LINUX -Dlinux -D_INTEL -D_USE_SCHED -D_USE_PTHREADS -D_USE_TERMIOS -D_FILE_OFFSET_BITS=64 -I${EW_HOME}/${EW_VERSION}/include"
    # For RHEL 8 or recent Fedora, use tirpc
-#   export CPPFLAGS="-D_LINUX -Dlinux -D_INTEL -D_USE_SCHED -D_USE_PTHREADS -D_USE_TERMIOS -D_FILE_OFFSET_BITS=64 -ltirpc -I${EW_HOME}/${EW_VERSION}/include -I/usr/include"
+   export CPPFLAGS="-D_LINUX -Dlinux -D_INTEL -D_USE_SCHED -D_USE_PTHREADS -D_USE_TERMIOS -D_FILE_OFFSET_BITS=64 -ltirpc -I${EW_HOME}/${EW_VERSION}/include -I/usr/include/tirpc"
 # You may also have to make some symlinks; see README under src
 
 
