@@ -19,11 +19,13 @@
 /* Added VERSION number 1.0.2  on Nov 5, 2014 */
 #define VERSION "1.0.3 2016.07.01"
 
-#define NAM_LEN 256         /* length of full directory name          */
 /* */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <math.h>
 #include <time.h>
 /* */
 #include <data_buf.h>
@@ -33,8 +35,13 @@
 #include <swap.h>
 #include <time_ew.h>
 #include <transport.h>
+#include <mem_circ_queue.h>
 
-#define MAX_BUFSIZ   51740
+/* */
+#define MAX_BUFSIZ           51740
+#define MAX_WAVEFILE         1000    /* max # waveform files to play   */
+#define MAX_LEN              512     /* length of full directory name  */
+#define FILE_INDICATOR_LOGO  0
 
 /* Function prototypes */
 static void tankplayer_config( char * );
@@ -46,11 +53,10 @@ static int fetch_trbuf( void *, const int, unsigned char *, int * );
 static double get_time( const void *, const unsigned char );
 static double set_time( void *, const unsigned char, const double );
 
-static SHM_INFO      Region;         /* Info structure for memory region  */
-pid_t                MyPID=0;        /* to use in heartbeat               */
+static SHM_INFO Region;         /* Info structure for memory region  */
+pid_t           MyPID = 0;      /* to use in heartbeat               */
 
-/* Things read from configuration file
- *************************************/
+/* Things read from configuration file */
 static long          RingKey;        /* transport ring to attach to       */
 static int           LogSwitch;      /* Log-to-disk switch                */
 static unsigned char MyModId;        /* play as this module id            */
@@ -60,32 +66,24 @@ static int           Pause;          /* # sec to sleep between wave files */
 static long          StartUpDelay;   /* seconds to wait before playing    */
 static int           ScreenMsg = 0;  /* =1 write info to screen, =0 don't */
 static int           Debug = 0;
-static int           AdjTime = 0;    /* =1 to adjust packet time, =0 don't*/
-static double        LateTime = 0.0; /* seconds earlier than present to   */
-                                     /*  put in packet timestamp.         */
-static int           bBeSuperLenient = 0; /* be lenient about putting out
-                                            tracebufs with incorrect
-                                            version numbers.              */
-
-static int       InterMessageDelayMillisecs = 0; /* the flag and number of ms to sleep between
-stuffing in tbufs, regardless of header time stamp!
-If this is set to 0, then all other delay settings apply
-*/
-static char      GetFromDir[NAM_LEN]; /* directory to monitor for data     */
-static unsigned  CheckPeriod = 1;         /* secs between looking for new files*/
+static int           AdjTime = 0;         /* =1 to adjust packet time, =0 don't                                     */
+static double        LateTime = 0.0;      /* seconds earlier than present to put in packet timestamp.               */
+static int           bBeSuperLenient = 0; /* be lenient about putting out tracebufs with incorrect version numbers. */
+/*
+ * the flag and number of ms to sleep between stuffing in tbufs,
+ * regardless of header time stamp! If this is set to 0,
+ * then all other delay settings apply
+ */
+static int       InterMessageDelayMillisecs = 0;
+static char      GetFromDir[MAX_LEN]; /* directory to monitor for data      */
+static unsigned  CheckPeriod = 1;     /* secs between looking for new files */
 static int       OpenTries = 5;
-static int       OpenWait= 200;		/* milliseconds between open tries */
-static int       SaveDataFiles=1;       /* if non-zero, move to SaveSubdir,  */
-                                      /*           0, remove files         */
-static char *TroubleSubdir = "trouble";   /* subdir for problem files    */
-static char *SaveSubdir = "save";         /* subdir for processed files  */
-
-#define MAX_WF  1000                      /* max # waveform files to play   */
-#define MAX_LEN 1024
-static char WaveFile[MAX_WF][MAX_LEN];  /* list of waveform files to play */
-static int  nWaveFile = 0;              /* # waveform files to play       */
-static char *ProgName = NULL;
-
+static int       OpenWait = 200;      /* milliseconds between open tries                  */
+static int       SaveDataFiles = 1;   /* if non-zero, move to SaveSubdir, 0, remove files */
+static char     *TroubleSubdir = "trouble"; /* subdir for problem files    */
+static char     *SaveSubdir = "save";       /* subdir for processed files  */
+static char      WaveFile[MAX_WAVEFILE][MAX_LEN];  /* list of waveform files to play */
+static int       nWaveFile = 0;                    /* # waveform files to play       */
 /* Look up from earthworm.h */
 static unsigned char InstId;         /* local installation id             */
 static unsigned char TypeHeartBeat;
@@ -93,66 +91,60 @@ static unsigned char TypeError;
 static unsigned char TypeADBuf;
 static unsigned char TypeTraceBuf;
 static unsigned char TypeTraceBuf2;
+/* Define global some other variables */
+static char           *ProgName = NULL;
+static pthread_mutex_t QueueMutex;
+static QUEUE           MsgQueue;    /* from queue.h, queue.c; sets up linked */
+/* Thread things */
+#define THREAD_STACK  8388608       /* 8388608 Byte = 8192 Kilobyte = 8 Megabyte */
+#define THREAD_OFF    0             /* thread has not been started      */
+#define THREAD_ALIVE  1             /* thread alive and well            */
+#define THREAD_ERR   -1             /* thread encountered error quit    */
+static volatile int   ReadFileThreadStatus = THREAD_OFF;
+static volatile _Bool Finish = 0;
 
 /* */
 int main( int argc, char *argv[] )
 {
-	static char   msg[MAX_BUFSIZ];  /* waveform data buffer read from file   */
-	WF_HEADER    *adhead;           /* pntr to header of TYPE_ADBUF msg      */
-	TRACE2_HEADER *wfhead;          /* pntr to header of TYPE_TRACEBUF2 msg  */
-	MSG_LOGO      logo;             /* logo to attach to waveform msgs       */
-	FILE         *fp;               /* file of waveform data to read from    */
-	int           fd;               /* file of waveform data to read from    */
-	double        CurrentTime;      /* current system time                   */
-	double        Ptime = 0.0;      /* original time stamp on packet         */
-	double        offsetTime = 0.0; /* Difference between Ptime and CurrentTime */
-	double        lastdot=0.;       /* time last dot was written to screen   */
-	double        wait;             /* Seconds to wait before sending pkt    */
-	time_t        itime;            /* integer version of double times       */
-	time_t        timeNow;          /* current system time                   */
-	time_t        timeLastBeat;     /* system time of last heartbeat sent    */
-	short         nchan;            /* #channels in this message             */
-	short         nscan;            /* #scans in this message                */
-	int           nsamp;            /* #samples in this message              */
-	unsigned char module = 0;       /* source module of this waveform msg    */
-	char          byte_order;       /* byte order of this trace msg          */
-	int           byte_per_sample;  /* for trace msg                         */
-	size_t        size = 0;
-	int           first;            /* flag 1st waveform message of file     */
-	int           iw, i;
-	char          lo[2];  /* logit arg1: ""  if ScreenMsg=0; "o"  otherwise  */
-	char          lot[3]; /* logit arg1: "t" if ScreenMsg=0; "ot" otherwise  */
-	int           iFileOffset, iLastRead;/* tracking where we are in the     */
-										/* current file - Debug info only   */
-	int           bIsCorrectVersion=1;   /* recording match of version info  */
-	int           continue_processing=1; /* switch to continue looking for more files or processing listed ones */
-
-	char          fname[NAM_LEN];		/* filename grabbed from polling dir */
-	char          fnew[NAM_LEN+25];	/* filename for moving to save dir */
-
-	char          *current_file;		/* a pointer to the currently named tank file */
-	int            result; 		/* processing result  -1 == failure */
+	uint8_t        msg[MAX_BUFSIZ];   /* waveform data buffer read from file   */
+	TRACE2_HEADER *wfhead;            /* pntr to header of TYPE_TRACEBUF2 msg  */
+	MSG_LOGO       putlogo;           /* logo to attach to waveform msgs       */
+	MSG_LOGO       getlogo;           /* logo fetch from the waveform files    */
+	double         current_time;      /* current system time                   */
+	double         pac_time = 0.0;    /* original time stamp on packet         */
+	double         offset_time = 0.0; /* Difference between pac_time and current_time */
+	double         wait;              /* Seconds to wait before sending pkt    */
+	time_t         itime;             /* integer version of double times       */
+	time_t         timeNow;           /* current system time                   */
+	time_t         timeLastBeat;      /* system time of last heartbeat sent    */
+	long           size = 0;
+	int            first;             /* flag 1st waveform message of file     */
+	int            i;
+	char           lo[2];  /* logit arg1: ""  if ScreenMsg=0; "o"  otherwise  */
+	char           lot[3]; /* logit arg1: "t" if ScreenMsg=0; "ot" otherwise  */
+	char           current_file[MAX_LEN];		/* a pointer to the currently named tank file */
+	int            res; 		/* processing result  -1 == failure */
 	int            ret;
+	ew_thread_t    tid;            /* Thread ID */
 
-	adhead = (WF_HEADER *)&msg[0];
-	wfhead = (TRACE2_HEADER *)&msg[0];
-
-
+/* */
+	wfhead = (TRACE2_HEADER *)msg;
 /* Check arguments */
 	if ( argc != 2 ) {
 		fprintf(stdout, "Usage: tankplayer configfile\n");
 		fprintf(stdout, "Version: %s\n", VERSION);
 		return 0;
 	}
+/* */
+	Finish = 1;
 /* Initialize name of log-file & open it */
-	logit_init( argv[1], 0, 512, 1 );
+	logit_init(argv[1], 0, 512, 1);
 	GetFromDir[0] = '\0';
 	ProgName = argv[0];
 
 /* Read configuration file */
 	tankplayer_config( argv[1] );
-
-	logit_init( argv[1], 0, 512, LogSwitch );
+	logit_init(argv[1], 0, 512, LogSwitch);
 	logit("" , "tankplayer: Read command file <%s>\n", argv[1]);
 	logit("" , "tankplayer: Version %s\n", VERSION);
 
@@ -183,13 +175,17 @@ int main( int argc, char *argv[] )
 		logit("e", "; exiting!\n");
 		return 1;
 	}
-	logo.instid = InstId;
-	logo.mod    = MyModId;
-	logo.type   = PlayType;
+	putlogo.instid = InstId;
+	putlogo.mod    = MyModId;
+	putlogo.type   = PlayType;
 
 /* Attach to transport ring */
 	tport_attach(&Region, RingKey);
 	logit("", "tankplayer: Attached to public memory region: %ld\n", RingKey);
+/* Create a Mutex to control access to queue */
+	CreateSpecificMutex(&QueueMutex);
+/* Initialize the message queue */
+	initqueue(&MsgQueue, 1024, (unsigned long)MAX_BUFSIZ);
 
 /* Force a heartbeat to be issued in first pass thru main loop */
 	timeLastBeat = time(&timeNow) - HeartBeatInt - 1;
@@ -205,21 +201,27 @@ int main( int argc, char *argv[] )
 	}
 
 /* Hold off sending data for a specified bit while system staggers up */
-	logit( lo, "tankplayer: startup. Waiting %ld seconds\n", StartUpDelay );
+	logit(lo, "%s: startup. Waiting %ld seconds\n", ProgName, StartUpDelay);
 	for ( i = 0; i < StartUpDelay; i++ ) {
 		sleep_ew(1000);
 		if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
 			timeLastBeat = timeNow;
 			tankplayer_status( TypeHeartBeat, 0, "" );
 		}
+		res = tport_getflag(&Region);
+		if ( res == TERMINATE || res == MyPID ) {
+			logit(lot, "%s: Termination requested; exiting!\n", ProgName);
+			goto exit_procedure;
+		}
 	}
+/* */
 	if ( nWaveFile == 0 && chdir_ew(GetFromDir) == -1 ) {
 		logit("e", "%s: GetFromDir directory <%s> not found; exiting!\n", ProgName, GetFromDir);
 		return -1;
 	}
 	if ( GetFromDir[0] != 0 && Debug )
 		logit("et", "%s: changed to directory <%s>\n", ProgName, GetFromDir);
-
+/* */
 	if ( nWaveFile == 0 ) {
 	/* Make sure trouble subdirectory exists */
 		if ( CreateDir(TroubleSubdir) != EW_SUCCESS ) {
@@ -236,37 +238,466 @@ int main( int argc, char *argv[] )
 	}
 
 /*--------- Main Loop: over list of waveform files to play----------------*/
-	iw = -1;
-	while ( continue_processing ) {
+	while ( 1 ) {
+	/* Send the heartbeat */
+		if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
+			timeLastBeat = timeNow;
+			tankplayer_status(TypeHeartBeat, 0, "");
+		}
+	/* See if it's time to stop */
+		res = tport_getflag(&Region);
+		if ( res == TERMINATE || res == MyPID ) {
+			logit(lot, "%s: Termination requested; exiting!\n", ProgName);
+			goto exit_procedure;
+		}
+	/* */
+		if ( ReadFileThreadStatus == THREAD_OFF ) {
+			if ( StartThread( thread_read_files, (unsigned)THREAD_STACK, &tid ) == -1 ) {
+				logit("e", "%s: Error starting thread(read_files); exiting!\n", ProgName);
+				goto exit_procedure;
+			}
+			ReadFileThreadStatus = THREAD_ALIVE;
+		}
+		else if ( ReadFileThreadStatus == THREAD_ERR ) {
+			goto exit_procedure;
+		}
+
+	/* */
+		RequestSpecificMutex(&QueueMutex);
+		res = dequeue(&MsgQueue, (char *)msg, &size, &getlogo);
+		ReleaseSpecificMutex(&QueueMutex);
+		if ( res < 0 ) {
+			sleep_ew(100);
+		}
+		else {
+		/* */
+			if ( getlogo.type == FILE_INDICATOR_LOGO ) {
+			/* */
+				itime = (time_t)pac_time;
+				logit(lot, "last header time-stamp: UTC %s", asctime(gmtime(&itime)));
+			/* */
+				if ( strlen(msg) ) {
+					first = 1;
+					strcpy(current_file, msg);
+					continue;
+				}
+				else {
+					logit(lot, "%s: No more wavefiles to play; exiting!\n", ProgName);
+					goto exit_procedure;
+				}
+			}
+		/* Sleep until it's time to send this message */
+			pac_time = get_time( msg, PlayType );
+			hrtime_ew( &current_time );
+		/* First trace... */
+			if ( first ) {
+				offset_time = ceil(current_time - pac_time);
+				first = 0;
+				logit(lo, "\n");
+				logit(
+					lo, "%s:  Reading    type:%3d  mod:%3d  from <%s>\n", ProgName, (int)PlayType, (int)getlogo.mod, current_file
+				);
+				logit(
+					lo, "             Playing as type:%3d  mod:%3d  inst:%3d\n", (int)PlayType, (int)MyModId, (int)InstId
+				);
+				if ( AdjTime ) {
+					logit(lot, "time shifted by %lf seconds from original\n", offset_time - LateTime);
+					itime = (time_t)(pac_time + offset_time - LateTime);
+				}
+				else {
+					itime = (time_t)pac_time;
+				}
+
+				logit(lot, " 1st header time-stamp: UTC %s", asctime(gmtime(&itime)));
+			}
+		/* */
+			pac_time += offset_time;
+		/* */
+			if ( InterMessageDelayMillisecs > 0 ) {
+				sleep_ew((unsigned)(InterMessageDelayMillisecs));
+			}
+			else {
+				if ( (pac_time - current_time) > 120.0 ) {
+					logit(
+						"e", "WARNING:  waiting %d seconds for packet: <%s.%s.%s> %15.2lf\n",
+						(int)(pac_time - current_time), wfhead->sta, wfhead->chan, wfhead->net, get_time( msg, PlayType )
+					);
+				}
+				while ( pac_time > current_time ) {
+					sleep_ew(100);
+					hrtime_ew( &current_time );
+					if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
+						timeLastBeat = timeNow;
+						tankplayer_status(TypeHeartBeat, 0, "");
+					}
+				}
+			}
+		/* */
+			if ( AdjTime )
+				pac_time = set_time( msg, PlayType, pac_time - LateTime );
+		/*
+			fprintf(
+				stdout, "%s: current time-stamp:%15.2lf  dt:%5.0lf ms  dtsys:%5.0lf ms\r",
+				ProgName, tcurr, dt, dtsys
+			);
+		*/ /* DEBUG */
+			if ( tport_putmsg(&Region, &putlogo, (long)size, msg) != PUT_OK )
+				logit("e", "%s: tport_putmsg error.\n", ProgName);
+			if ( Debug )
+				logit("t", "packet: <%s.%s.%s> %15.2lf\n", wfhead->sta, wfhead->chan, wfhead->net, get_time( msg, PlayType ));
+		}
+	} /*end-while */
+exit_procedure:
+	Finish = 0;
+	tport_detach(&Region);
+	freequeue(&MsgQueue);
+	CloseSpecificMutex(&QueueMutex);
+	fflush(stdout);
+
+	return 0;
+}
+
+/*
+ * tankplayer_config()  processes command file using kom.c functions
+ *                      exits if any errors are encountered
+ */
+void tankplayer_config(char *configfile)
+{
+	int ncommand;  /* # of required commands you expect to process   */
+	char init[10]; /* init flags, one byte for each required command */
+	int nmiss;	   /* number of required commands that were missed   */
+	char *comm;
+	char *str;
+	int nfiles;
+	int success;
+	int i;
+
+/* Set to zero one init flag for each required command */
+	ncommand = 8;
+	for ( i = 0; i < ncommand; i++ )
+		init[i] = 0;
+
+/* Open the main configuration file */
+	nfiles = k_open(configfile);
+	if ( nfiles == 0 ) {
+		logit("e", "tankplayer: Error opening command file <%s>; exiting!\n", configfile);
+		exit(-1);
+	}
+
+/* Process all command files */
+/* While there are command files open */
+	while ( nfiles > 0 ) {
+	/* Read next line from active file  */
+		while ( k_rd() ) {
+			comm = k_str(); /* Get the first token from line */
+
+		/* Ignore blank lines & comments */
+			if ( !comm )
+				continue;
+			if ( comm[0] == '#' )
+				continue;
+
+		/* Open a nested configuration file */
+			if ( comm[0] == '@' ) {
+				success = nfiles + 1;
+				nfiles = k_open(&comm[1]);
+				if ( nfiles != success ) {
+					logit("e", "tankplayer: Error opening command file <%s>; exiting!\n", &comm[1]);
+					exit(-1);
+				}
+				continue;
+			}
+
+		/* Process anything else as a command */
+		/* Read the transport ring name */
+		/* 0 */
+			if ( k_its("RingName") ) {
+				if ( (str = k_str()) != NULL ) {
+					if ( (RingKey = GetKey(str)) == -1 ) {
+						logit("e", "tankplayer: Invalid ring name <%s>; exiting!\n", str);
+						exit(-1);
+					}
+				}
+				init[0] = 1;
+			}
+		/* Read the log file switch */
+		/* 1 */
+			else if ( k_its("LogFile") ) {
+				LogSwitch = k_int();
+				init[1] = 1;
+			}
+		/* Read tankplayer's module id */
+		/* 2 */
+			else if ( k_its("MyModuleId") ) {
+				if ( (str = k_str()) != NULL ) {
+					if ( GetModId(str, &MyModId) != 0 ) {
+						logit("e", "tankplayer: Invalid module name <%s>; exiting!\n", str);
+						exit(-1);
+					}
+				}
+				init[2] = 1;
+			}
+		/* Read type of waveform msg to read from tankfile */
+		/* 3 */
+			else if ( k_its("PlayMsgType") ) {
+				if ( (str = k_str()) != NULL ) {
+					if ( GetType(str, &PlayType) != 0 ) {
+						logit("e", "tankplayer: Invalid message type <%s>", str);
+						logit("e", " in <PlayMsgType> cmd; exiting!\n");
+						exit(-1);
+					}
+				}
+				init[3] = 1;
+			}
+		/* Read heartbeat interval (seconds) */
+		/* 4 */
+			else if ( k_its("HeartBeatInt") ) {
+				HeartBeatInt = k_long();
+				init[4] = 1;
+			}
+		/* Read a list of wave files to play */
+		/* 5 */
+			else if ( k_its("WaveFile") ) {
+				if ( nWaveFile + 1 >= MAX_WAVEFILE ) {
+					logit("e", "tankplayer: Too many <WaveFile> commands in <%s>", configfile);
+					logit("e", "; max=%d; exiting!\n", MAX_WAVEFILE);
+					exit(-1);
+				}
+				if ( (str = k_str()) != NULL ) {
+					if ( strlen(str) > (size_t)MAX_LEN - 1 ) {
+						logit("e", "tankplayer: Filename <%s> too long in <WaveFile>", str);
+						logit("e", " cmd; max=%d; exiting!\n", MAX_LEN - 1);
+						exit(-1);
+					}
+					strcpy(WaveFile[nWaveFile], str);
+				}
+				nWaveFile++;
+				init[5] = 1;
+			}
+			else if ( k_its("GetFromDir") ) {
+				str = k_str();
+				if ( str )
+					strncpy(GetFromDir, str, MAX_LEN);
+				init[5] = 1;
+			}
+			else if ( k_its("CheckPeriod") ) {
+				CheckPeriod = k_int();
+			}
+			else if ( k_its("OpenTries") ) {
+				OpenTries = k_int();
+			}
+			else if ( k_its("OpenWait") ) {
+				OpenWait = k_int();
+			}
+			else if ( k_its("SaveDataFiles") ) {
+				SaveDataFiles = k_int();
+			}
+		/* Read #seconds to pause between playing wave files */
+		/* 6 */
+			else if ( k_its("Pause") ) {
+				Pause = k_int();
+				init[6] = 1;
+			}
+		/* Read #seconds to wait for system to come up before playing data */
+		/* 7 */
+			else if ( k_its("StartUpDelay") ) {
+				StartUpDelay = k_int();
+				init[7] = 1;
+			}
+		/* Flag for writing info to screen */
+		/* Optional command */
+			else if ( k_its("ScreenMsg") ) {
+				ScreenMsg = k_int();
+			}
+		/* Optional packet time adjustment */
+			else if ( k_its("SendLate") ) {
+				AdjTime = 1;
+				LateTime = k_val();
+			}
+			else if ( k_its("InterMessageDelayMillisecs") ) {
+				InterMessageDelayMillisecs = (int)k_val();
+			}
+		/* Optional debug command */
+			else if ( k_its("Debug") ) {
+				Debug = k_int();
+			}
+			else if ( k_its("IgnoreTBVersionNumbers") ) {
+				bBeSuperLenient = k_int();
+			}
+		/* Command is not recognized */
+			else {
+				logit("e", "tankplayer: <%s> unknown command in <%s>.\n", comm, configfile);
+				continue;
+			}
+
+		/* See if there were any errors processing the command */
+			if ( k_err() ) {
+				logit("e", "tankplayer: Bad <%s> command in <%s>; exiting!\n", comm, configfile);
+				exit(-1);
+			}
+		}
+		nfiles = k_close();
+	}
+
+/* After all files are closed, check init flags for missed commands */
+	nmiss = 0;
+	for ( i = 0; i < ncommand; i++ ) {
+		if (!init[i])
+			nmiss++;
+	}
+
+	if ( nmiss ) {
+		logit("e", "tankplayer: ERROR, no ");
+		if (! init[0] ) logit("e", "<RingName> "     );
+		if (! init[1] ) logit("e", "<LogFile> "      );
+		if (! init[2] ) logit("e", "<MyModuleId> "   );
+		if (! init[3] ) logit("e", "<PlayMsgType> "  );
+		if (! init[4] ) logit("e", "<HeartBeatInt> " );
+		if (! init[5] ) logit("e", "<WaveFile> "     );
+		if (! init[6] ) logit("e", "<Pause> "        );
+		if (! init[7] ) logit("e", "<StartUpDelay> " );
+		logit("e", "command(s) in <%s>; exiting!\n", configfile);
+		exit(-1);
+	}
+
+	return;
+}
+
+/*
+ * tankplayer_lookup( )   Look up important info from earthworm.h tables
+ */
+void tankplayer_lookup( void )
+{
+	if ( GetLocalInst(&InstId) != 0 ) {
+		fprintf(stderr, "tankplayer: error getting local installation id; exiting!\n");
+		exit(-1);
+	}
+	if ( GetType("TYPE_ADBUF", &TypeADBuf) != 0 ) {
+		fprintf(stderr, "tankplayer: Invalid message type <TYPE_ADBUF>; exiting!\n");
+		exit(-1);
+	}
+	if ( GetType("TYPE_TRACEBUF", &TypeTraceBuf) != 0 ) {
+		fprintf(stderr, "tankplayer: Invalid message type <TYPE_TRACEBUF>; exiting!\n");
+		exit(-1);
+	}
+	if ( GetType("TYPE_TRACEBUF2", &TypeTraceBuf2) != 0 ) {
+		fprintf(stderr, "tankplayer: Invalid message type <TYPE_TRACEBUF2>; exiting!\n");
+		exit(-1);
+	}
+	if ( GetType("TYPE_HEARTBEAT", &TypeHeartBeat) != 0 ) {
+		fprintf(stderr, "tankplayer: Invalid message type <TYPE_HEARTBEAT>; exiting!\n");
+		exit(-1);
+	}
+	if ( GetType("TYPE_ERROR", &TypeError) != 0 ) {
+		fprintf(stderr, "tankplayer: Invalid message type <TYPE_ERROR>; exiting!\n");
+		exit(-1);
+	}
+	return;
+}
+
+/*
+ * tankplayer_status() builds a heartbeat or error message & puts it into
+ *                     shared memory.  Writes errors to log file & screen.
+ */
+void tankplayer_status( unsigned char type, short ierr, char *note )
+{
+	MSG_LOGO logo;
+	char msg[256];
+	long size;
+	time_t t;
+
+/* Build the message */
+	logo.instid = InstId;
+	logo.mod = MyModId;
+	logo.type = type;
+
+	time(&t);
+
+	if ( type == TypeHeartBeat ) {
+		sprintf(msg, "%ld %ld\n", (long)t, (long)MyPID);
+	}
+	else if ( type == TypeError ) {
+		sprintf(msg, "%ld %hd %s\n", (long)t, ierr, note);
+		logit("et", "tankplayer: %s\n", note);
+	}
+
+	size = (long)strlen(msg); /* don't include the null byte in the message */
+
+/* Write the message to shared memory */
+	if ( tport_putmsg(&Region, &logo, size, msg) != PUT_OK ) {
+		if ( type == TypeHeartBeat ) {
+			logit("et", "tankplayer: Error sending heartbeat.\n");
+		}
+		else if ( type == TypeError ) {
+			logit("et", "tankplayer: Error sending error:%d.\n", ierr);
+		}
+	}
+
+	return;
+}
+
+/*
+ *
+ */
+static thr_ret thread_read_files( void *dummy )
+{
+	int i;
+	int iw = -1;
+	int fd = 0;
+	int ret = 0;
+	int result = 0;
+	int file_offset = 0;      /* tracking where we are in the     */
+	int correct_version = 1;  /* recording match of version info  */
+
+	double current_time;   /* current system time                   */
+	double lastdot = 0.0;  /* time last dot was written to screen   */
+
+	char *current_file = NULL;
+	char  lo[2];               /* logit arg1: "" if ScreenMsg=0; "o" otherwise */
+	char  fname[MAX_LEN];      /* filename grabbed from polling dir */
+	char  fnew[MAX_LEN + 25];  /* filename for moving to save dir */
+
+	uint8_t        msg[MAX_BUFSIZ];                /* waveform data buffer read from file   */
+	TRACE2_HEADER *wfhead = (TRACE2_HEADER *)msg;  /* pntr to header of TYPE_TRACEBUF2 msg  */
+	MSG_LOGO       logo;                           /* logo to attach to waveform msgs       */
+
+/* */
+	ReadFileThreadStatus = THREAD_ALIVE;
+/* Set up logit's first argument based on value of ScreenMsg */
+	strcpy(lo, ScreenMsg ? "o" : "");
+/* */
+	logo.instid = InstId;
+/* */
+	while ( Finish ) {
 		if ( nWaveFile > 0 ) {
 		/* we are processing via listed files */
 			iw++;
 		/* we have reached the end! */
-			if ( iw == nWaveFile )
-				break;
+			if ( iw == nWaveFile ) {
+			/* Sending the file starting message to the main process */
+				logo.type = FILE_INDICATOR_LOGO;
+				msg[0] = '\0';
+				while ( getNumOfElementsInQueue(&MsgQueue) == 1024 )
+					sleep_ew(100);
+				RequestSpecificMutex(&QueueMutex);
+				enqueue(&MsgQueue, (char *)msg, 1, logo);
+				ReleaseSpecificMutex(&QueueMutex);
+			/* */
+				return NULL;
+			}
 		/* Open a listed waveform file */
-			fp = fopen(WaveFile[iw], "rb");
-			if ( fp == NULL ) {
+			if ( (fd = open(WaveFile[iw], O_RDONLY, 0)) <= 0 ) {
 				logit("e", "%s: Cannot open tank file <%s>\n", ProgName, WaveFile[iw]);
 				continue;
 			}
-			if ( Debug > 0 ) {
+			if ( Debug ) {
 				logit("e", "%s: starting tank <%s>\n", ProgName, WaveFile[iw]);
 			}
 			current_file = WaveFile[iw];
 		}
 		else {
 		/* open the file in the directory specified */
-			while ( 1 ) {
-				if ( tport_getflag(&Region) == TERMINATE || tport_getflag(&Region) == MyPID ) {
-					logit(lot, "%s: Termination requested; exiting!\n", ProgName);
-					tport_detach(&Region);
-					return 0;
-				}
-				if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
-					timeLastBeat = timeNow;
-					tankplayer_status(TypeHeartBeat, 0, "");
-				}
+			while ( Finish ) {
 			/* No files found; wait for one to appear */
 				if ( GetFileName(fname) == 1 ) {
 					sleep_ew(CheckPeriod * 1000);
@@ -286,122 +717,65 @@ int main( int argc, char *argv[] )
 		 * as that will hopefully get us an exclusive open.
 		 * We don't ever want to look at a file that's being written to.
 		 */
-			fp = NULL;
-			for ( i = 0; i < OpenTries; i++ ) {
-				fp = fopen(fname, "rb+");
-				if ( fp != NULL )
+			for ( i = 0; i < OpenTries && Finish; i++ ) {
+				if ( fd = open(fname, O_RDONLY, 0) > 0 )
 					break;
 				sleep_ew(OpenWait);
 			}
+		/* */
+			if ( !Finish )
+				return NULL;
 		/* failed to open file! */
-			if ( fp == NULL ) {
+			if ( fd <= 0 ) {
 				logit("et", "%s: Error: Could not open %s after %d*%d msec.", ProgName, fname, OpenTries, OpenWait);
 				result = -1;
-				goto ProcessedFile;
+				goto file_process;
 			}
 			if ( i > 0 ) {
 				logit("t", "Warning: %d attempts required to open file %s\n", i + 1, fname);
 			}
 		}
-		iFileOffset = 0;
-		iLastRead   = 0;
-	/* See if it's time to stop */
-		if ( tport_getflag(&Region) == TERMINATE || tport_getflag(&Region) == MyPID ) {
-			logit(lot, "%s: Termination requested; exiting!\n", ProgName);
-			tport_detach(&Region);
-			return 0;
-		}
 
-		first = 1;
+	/* Sending the file starting message to the main process */
+		logo.type = FILE_INDICATOR_LOGO;
+		strcpy(msg, current_file);
+		while ( getNumOfElementsInQueue(&MsgQueue) == 1024 )
+			sleep_ew(100);
+		RequestSpecificMutex(&QueueMutex);
+		enqueue(&MsgQueue, (char *)msg, strlen(msg) + 1, logo);
+		ReleaseSpecificMutex(&QueueMutex);
 
+		file_offset = 0;
 	/* Loop over one file: get a msg from file, write it to ring */
-		while ( tport_getflag(&Region) != TERMINATE && tport_getflag(&Region) != MyPID ) {
-		/* Send tankplayer's heartbeat */
-			if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
-				timeLastBeat = timeNow;
-				tankplayer_status( TypeHeartBeat, 0, "" );
-			}
-
+		while ( Finish ) {
+		/* */
+			logo.type = PlayType;
 		/* Read ADBuf waveform message from tank */
 			if ( PlayType == TypeADBuf ) {
-				if ( (ret = fetch_adbuf(msg, fd, &module, &bIsCorrectVersion)) < 0 ) {
+				if ( (ret = fetch_adbuf(msg, fd, &logo.mod, &correct_version)) < 0 ) {
 					break;
 				}
-				iFileOffset += ret;
+				file_offset += ret;
 			}
 		/* Read TraceBuf waveform message from file */
 			else if ( PlayType == TypeTraceBuf2 || PlayType == TypeTraceBuf ) {
-				if ( (ret = fetch_trbuf(msg, fd, &module, &bIsCorrectVersion)) < 0 ) {
+				if ( (ret = fetch_trbuf(msg, fd, &logo.mod, &correct_version)) < 0 ) {
 					break;
 				}
 			/* */
-				if ( !bIsCorrectVersion && !bBeSuperLenient ) {
+				if ( !correct_version && !bBeSuperLenient ) {
 					logit(
 						"e", "%s: Error: packet (%s,%s,%s) at file %s offset %d is not the correct TYPE_TRACEBUF2 version (%c%c).  \n"
 						"Parsing it as one and attempting to continue.  Will not output this packet!\n",
-						ProgName, wfhead->sta, wfhead->chan, wfhead->net, current_file, iFileOffset, wfhead->version[0], wfhead->version[1]
+						ProgName, wfhead->sta, wfhead->chan, wfhead->net, current_file, file_offset, wfhead->version[0], wfhead->version[1]
 					);
 				}
 			/* */
-				iFileOffset += ret;
+				file_offset += ret;
 			}
-
-		/* Sleep until it's time to send this message */
-			Ptime = get_time( msg, PlayType );
-			hrtime_ew( &CurrentTime );
-		/* First trace... */
-			if ( first ) {
-				offsetTime = CurrentTime - Ptime;
-				first = 0;
-				logit(lo, "\n");
-				logit(
-					lo, "%s:  Reading    type:%3d  mod:%3d  from <%s>\n",
-					ProgName, (int)PlayType, (int)module, current_file
-				);
-				logit(
-					lo, "             Playing as type:%3d  mod:%3d  inst:%3d\n",
-					(int)PlayType, (int)MyModId, (int)InstId
-				);
-				if ( AdjTime ) {
-					logit(lot, "time shifted by %lf seconds from original\n", offsetTime - LateTime);
-					itime = (time_t)(Ptime + offsetTime - LateTime);
-				}
-				else {
-					itime = (time_t)Ptime;
-				}
-
-				logit(lot, " 1st header time-stamp: UTC %s", asctime(gmtime(&itime)));
-			}
-
-			if ( InterMessageDelayMillisecs > 0 ) {
-				sleep_ew((unsigned)(InterMessageDelayMillisecs));
-			}
-			else {
-				wait = Ptime + offsetTime - CurrentTime;
-				if ( wait > 0.0 ) {
-					if ( wait > 120.0 ) {
-						logit(
-							"e", "WARNING:  waiting %d seconds for packet: <%s.%s.%s> %15.2lf\n",
-							(int)wait, wfhead->sta, wfhead->chan, wfhead->net, Ptime
-						);
-					}
-					while ( wait > 1.0 ) {
-						wait -= 1.0;
-						sleep_ew((unsigned)(1 * 1000.0));
-						if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
-							timeLastBeat = timeNow;
-							tankplayer_status(TypeHeartBeat, 0, "");
-						}
-					}
-				}
-			}
-
-			if ( AdjTime )
-				set_time( msg, PlayType, Ptime + offsetTime - LateTime );
-
 		/* Write waveform message to transport region */
-			if ( ScreenMsg && (CurrentTime - lastdot) > 1.0 ) {
-				lastdot = CurrentTime;
+			if ( ScreenMsg && (current_time - lastdot) > 1.0 ) {
+				lastdot = current_time;
 				fprintf(stdout, ".");
 				fflush(stdout);
 			}
@@ -411,51 +785,38 @@ int main( int argc, char *argv[] )
 				ProgName, tcurr, dt, dtsys
 			);
 		*/ /* DEBUG */
-			if ( bIsCorrectVersion || bBeSuperLenient ) {
-				if ( tport_putmsg(&Region, &logo, (long)size, msg) != PUT_OK )
-					logit("e", "%s: tport_putmsg error.\n", ProgName);
-				if ( Debug > 0 )
-					logit("t", "packet: <%s.%s.%s> %15.2lf\n", wfhead->sta, wfhead->chan, wfhead->net, Ptime);
-			}
+			if ( correct_version || bBeSuperLenient ) {
+				while ( getNumOfElementsInQueue(&MsgQueue) == 1024 )
+					sleep_ew(100);
+				RequestSpecificMutex(&QueueMutex);
+				enqueue(&MsgQueue, (char *)msg, ret, logo);
+				ReleaseSpecificMutex(&QueueMutex);
 
+				if ( Debug )
+					logit("t", "packet: <%s.%s.%s> %15.2lf\n", wfhead->sta, wfhead->chan, wfhead->net, get_time( msg, PlayType ));
+			}
 		} /*end-while over one file*/
 
 	/* Clean up; get ready for next file */
 		if ( ScreenMsg )
 			fprintf(stdout, "\n");
-	/* success up to this point */
 		result = 0;
-		if ( AdjTime )
-			itime = (time_t)(Ptime + offsetTime - LateTime);
-		else
-			itime = (time_t)Ptime;
-		logit(lot, "last header time-stamp: UTC %s", asctime(gmtime(&itime)));
-
-		if ( feof(fp) ) {
+		if ( ret == 0 ) {
 			logit(lo, "%s:  Reached end of <%s>\n", ProgName, current_file);
 		}
-		else if ( ferror(fp) ) {
+		else if ( ret < 0 ) {
 			logit(lo, "%s:  Error reading from <%s>\n", ProgName, current_file);
 			result = -1;
 		}
-		else {
-			logit(lo, "%s:  Closing <%s>\n", ProgName, current_file);
-		}
-		fclose(fp);
-
+		logit(lo, "%s:  Closing <%s>\n", ProgName, current_file);
+		close(fd);
 	/* Pause between playing files */
-		for ( i = 0; i < Pause; i++ ) {
+		for ( i = 0; i < Pause && Finish; i++ )
 			sleep_ew(1000);
-			if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
-				timeLastBeat = timeNow;
-				tankplayer_status(TypeHeartBeat, 0, "");
-			}
-		}
 	/* jump to next file in list */
 		if ( iw != -1 )
 			continue;
-
-ProcessedFile:
+file_process:
 	/* now handle the GetFromDir case, and clean up the tank file lying around as directed */
 		if ( result >= 0 ) {
 		/* Keep file around */
@@ -492,386 +853,14 @@ ProcessedFile:
 				logit("e", " moved to ./%s\n", fnew);
 			}
 		}
-	} /*end-while */
-
-	tport_detach(&Region);
-	logit(lot, "tankplayer: No more wavefiles to play; exiting!\n");
-	fflush(stdout);
-
-	return 0;
-}
-
-/***********************************************************************
- * tankplayer_config()  processes command file using kom.c functions   *
- *                      exits if any errors are encountered            *
- ***********************************************************************/
-void tankplayer_config(char *configfile)
-{
-	int ncommand;  /* # of required commands you expect to process   */
-	char init[10]; /* init flags, one byte for each required command */
-	int nmiss;	   /* number of required commands that were missed   */
-	char *comm;
-	char *str;
-	int nfiles;
-	int success;
-	int i;
-
-	/* Set to zero one init flag for each required command
-	*****************************************************/
-	ncommand = 8;
-	for (i = 0; i < ncommand; i++)
-		init[i] = 0;
-
-	/* Open the main configuration file
-	**********************************/
-	nfiles = k_open(configfile);
-	if (nfiles == 0)
-	{
-		logit("e",
-			  "tankplayer: Error opening command file <%s>; exiting!\n",
-			  configfile);
-		exit(-1);
 	}
+/* File a complaint to the main thread */
+	if ( Finish )
+		ReadFileThreadStatus = THREAD_ERR;
 
-	/* Process all command files
-	***************************/
-	while (nfiles > 0) /* While there are command files open */
-	{
-		while (k_rd()) /* Read next line from active file  */
-		{
-			comm = k_str(); /* Get the first token from line */
+	KillSelfThread();
 
-			/* Ignore blank lines & comments
-			*******************************/
-			if (!comm)
-				continue;
-			if (comm[0] == '#')
-				continue;
-
-			/* Open a nested configuration file
-			**********************************/
-			if (comm[0] == '@')
-			{
-				success = nfiles + 1;
-				nfiles = k_open(&comm[1]);
-				if (nfiles != success)
-				{
-					logit("e",
-						  "tankplayer: Error opening command file <%s>; exiting!\n",
-						  &comm[1]);
-					exit(-1);
-				}
-				continue;
-			}
-
-			/* Process anything else as a command
-			************************************/
-			/* Read the transport ring name
-			******************************/
-			/*0*/ if (k_its("RingName"))
-			{
-				if ((str = k_str()) != NULL)
-				{
-					if ((RingKey = GetKey(str)) == -1)
-					{
-						logit("e",
-							  "tankplayer: Invalid ring name <%s>; exiting!\n",
-							  str);
-						exit(-1);
-					}
-				}
-				init[0] = 1;
-			}
-
-			/* Read the log file switch
-			**************************/
-			/*1*/ else if (k_its("LogFile"))
-			{
-				LogSwitch = k_int();
-				init[1] = 1;
-			}
-
-			/* Read tankplayer's module id
-			******************************/
-			/*2*/ else if (k_its("MyModuleId"))
-			{
-				if ((str = k_str()) != NULL)
-				{
-					if (GetModId(str, &MyModId) != 0)
-					{
-						logit("e",
-							  "tankplayer: Invalid module name <%s>; exiting!\n",
-							  str);
-						exit(-1);
-					}
-				}
-				init[2] = 1;
-			}
-
-			/* Read type of waveform msg to read from tankfile
-			*************************************************/
-			/*3*/ else if (k_its("PlayMsgType"))
-			{
-				if ((str = k_str()) != NULL)
-				{
-					if (GetType(str, &PlayType) != 0)
-					{
-						logit("e",
-							  "tankplayer: Invalid message type <%s>", str);
-						logit("e", " in <PlayMsgType> cmd; exiting!\n");
-						exit(-1);
-					}
-				}
-				init[3] = 1;
-			}
-
-			/* Read heartbeat interval (seconds)
-			***********************************/
-			/*4*/ else if (k_its("HeartBeatInt"))
-			{
-				HeartBeatInt = k_long();
-				init[4] = 1;
-			}
-
-			/* Read a list of wave files to play
-			***********************************/
-			/*5*/ else if (k_its("WaveFile"))
-			{
-				if (nWaveFile + 1 >= MAX_WF)
-				{
-					logit("e",
-						  "tankplayer: Too many <WaveFile> commands in <%s>",
-						  configfile);
-					logit("e", "; max=%d; exiting!\n", MAX_WF);
-					exit(-1);
-				}
-				if ((str = k_str()) != NULL)
-				{
-					if (strlen(str) > (size_t)MAX_LEN - 1)
-					{
-						logit("e",
-							  "tankplayer: Filename <%s> too long in <WaveFile>",
-							  str);
-						logit("e", " cmd; max=%d; exiting!\n", MAX_LEN - 1);
-						exit(-1);
-					}
-					strcpy(WaveFile[nWaveFile], str);
-				}
-				nWaveFile++;
-				init[5] = 1;
-			}
-			else if (k_its("GetFromDir"))
-			{
-				str = k_str();
-				if (str)
-					strncpy(GetFromDir, str, NAM_LEN);
-				init[5] = 1;
-			}
-			else if (k_its("CheckPeriod"))
-			{
-				CheckPeriod = k_int();
-			}
-			else if (k_its("OpenTries"))
-			{
-				OpenTries = k_int();
-			}
-			else if (k_its("OpenWait"))
-			{
-				OpenWait = k_int();
-			}
-			else if (k_its("SaveDataFiles"))
-			{
-				SaveDataFiles = k_int();
-			}
-
-			/* Read #seconds to pause between playing wave files
-			***************************************************/
-			/*6*/ else if (k_its("Pause"))
-			{
-				Pause = k_int();
-				init[6] = 1;
-			}
-
-			/* Read #seconds to wait for system to come up before playing data
-			****************************************************************/
-			/*7*/ else if (k_its("StartUpDelay"))
-			{
-				StartUpDelay = k_int();
-				init[7] = 1;
-			}
-
-			/* Flag for writing info to screen
-			*********************************/
-			else if (k_its("ScreenMsg")) /*Optional command*/
-			{
-				ScreenMsg = k_int();
-			}
-
-			/* Optional packet time adjustment
-			**********************************/
-			else if (k_its("SendLate"))
-			{
-				AdjTime = 1;
-				LateTime = k_val();
-			}
-			else if (k_its("InterMessageDelayMillisecs"))
-			{
-				InterMessageDelayMillisecs = (int)k_val();
-			}
-
-			/* Optional debug command */
-			else if (k_its("Debug"))
-			{
-				Debug = k_int();
-			}
-			else if (k_its("IgnoreTBVersionNumbers"))
-			{
-				bBeSuperLenient = k_int();
-			}
-			/* Command is not recognized
-			***************************/
-			else
-			{
-				logit("e", "tankplayer: <%s> unknown command in <%s>.\n",
-					  comm, configfile);
-				continue;
-			}
-
-			/* See if there were any errors processing the command
-			*****************************************************/
-			if (k_err())
-			{
-				logit("e",
-					  "tankplayer: Bad <%s> command in <%s>; exiting!\n",
-					  comm, configfile);
-				exit(-1);
-			}
-		}
-		nfiles = k_close();
-	}
-
-	/* After all files are closed, check init flags for missed commands
-	******************************************************************/
-	nmiss = 0;
-	for (i = 0; i < ncommand; i++)
-		if (!init[i])
-			nmiss++;
-	if (nmiss)
-	{
-		logit("e", "tankplayer: ERROR, no ");
-		if (!init[0])
-			logit("e", "<RingName> ");
-		if (!init[1])
-			logit("e", "<LogFile> ");
-		if (!init[2])
-			logit("e", "<MyModuleId> ");
-		if (!init[3])
-			logit("e", "<PlayMsgType> ");
-		if (!init[4])
-			logit("e", "<HeartBeatInt> ");
-		if (!init[5])
-			logit("e", "<WaveFile> ");
-		if (!init[6])
-			logit("e", "<Pause> ");
-		if (!init[7])
-			logit("e", "<StartUpDelay> ");
-		logit("e", "command(s) in <%s>; exiting!\n", configfile);
-		exit(-1);
-	}
-
-	return;
-}
-
-/***************************************************************************
- *  tankplayer_lookup( )   Look up important info from earthworm.h tables  *
- ***************************************************************************/
-void tankplayer_lookup( void )
-{
-	if (GetLocalInst(&InstId) != 0)
-	{
-		fprintf(stderr,
-				"tankplayer: error getting local installation id; exiting!\n");
-		exit(-1);
-	}
-	if (GetType("TYPE_ADBUF", &TypeADBuf) != 0)
-	{
-		fprintf(stderr,
-				"tankplayer: Invalid message type <TYPE_ADBUF>; exiting!\n");
-		exit(-1);
-	}
-	if (GetType("TYPE_TRACEBUF", &TypeTraceBuf) != 0)
-	{
-		fprintf(stderr,
-				"tankplayer: Invalid message type <TYPE_TRACEBUF>; exiting!\n");
-		exit(-1);
-	}
-	if (GetType("TYPE_TRACEBUF2", &TypeTraceBuf2) != 0)
-	{
-		fprintf(stderr,
-				"tankplayer: Invalid message type <TYPE_TRACEBUF2>; exiting!\n");
-		exit(-1);
-	}
-	if (GetType("TYPE_HEARTBEAT", &TypeHeartBeat) != 0)
-	{
-		fprintf(stderr,
-				"tankplayer: Invalid message type <TYPE_HEARTBEAT>; exiting!\n");
-		exit(-1);
-	}
-	if (GetType("TYPE_ERROR", &TypeError) != 0)
-	{
-		fprintf(stderr,
-				"tankplayer: Invalid message type <TYPE_ERROR>; exiting!\n");
-		exit(-1);
-	}
-	return;
-}
-
-/******************************************************************************
- * tankplayer_status() builds a heartbeat or error message & puts it into     *
- *                     shared memory.  Writes errors to log file & screen.    *
- ******************************************************************************/
-void tankplayer_status( unsigned char type, short ierr, char *note )
-{
-	MSG_LOGO logo;
-	char msg[256];
-	long size;
-	time_t t;
-
-	/* Build the message
-	*******************/
-	logo.instid = InstId;
-	logo.mod = MyModId;
-	logo.type = type;
-
-	time(&t);
-
-	if (type == TypeHeartBeat)
-	{
-		sprintf(msg, "%ld %ld\n", (long)t, (long)MyPID);
-	}
-	else if (type == TypeError)
-	{
-		sprintf(msg, "%ld %hd %s\n", (long)t, ierr, note);
-		logit("et", "tankplayer: %s\n", note);
-	}
-
-	size = (long)strlen(msg); /* don't include the null byte in the message */
-
-	/* Write the message to shared memory
-	************************************/
-	if (tport_putmsg(&Region, &logo, size, msg) != PUT_OK)
-	{
-		if (type == TypeHeartBeat)
-		{
-			logit("et", "tankplayer:  Error sending heartbeat.\n");
-		}
-		else if (type == TypeError)
-		{
-			logit("et", "tankplayer:  Error sending error:%d.\n", ierr);
-		}
-	}
-
-	return;
+	return NULL;
 }
 
 /*
