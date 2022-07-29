@@ -1,5 +1,5 @@
-LINUX_FLAGS    = -lpthread
-SOLARIS_FLAGS  = -lrt -lpthread
+LINUX_FLAGS    = -lpthread -lm
+SOLARIS_FLAGS  = -lrt -lpthread -lm
 SPECIFIC_FLAGS = $($(PLATFORM)_FLAGS)
 
 CFLAGS = $(GLOBALFLAGS)
@@ -14,7 +14,8 @@ OBJS = $(APP).o
 EW_LIBS = \
 	$L/dirops_ew.o \
 	$L/swap.o \
-	-L$L -lew_mt 
+	$L/mem_circ_queue.o \
+	-L$L -lew_mt
 
 $B/$(APP): $(OBJS)
 	$(CC) -o $@ $(CFLAGS) $(OBJS) $(EW_LIBS) $(SPECIFIC_FLAGS)

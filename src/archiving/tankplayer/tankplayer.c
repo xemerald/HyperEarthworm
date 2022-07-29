@@ -15,9 +15,7 @@
  *  Command line arguments:                                          *
  *     arvg[1] = tankplayer's configuration file                     *
  *********************************************************************/
-
-/* Added VERSION number 1.0.2  on Nov 5, 2014 */
-#define VERSION "1.0.3 2016.07.01"
+#define VERSION "2.0.0 2022.07.29"
 
 /* */
 #include <stdio.h>
@@ -27,6 +25,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <time.h>
+#include <sys/time.h>
 /* */
 #include <data_buf.h>
 #include <trace_buf.h>
@@ -38,20 +37,24 @@
 #include <mem_circ_queue.h>
 
 /* */
-#define MAX_BUFSIZ           51740
-#define MAX_WAVEFILE         1000    /* max # waveform files to play   */
-#define MAX_LEN              512     /* length of full directory name  */
-#define FILE_INDICATOR_LOGO  0
+#define MAX_BUFSIZ            51740
+#define MAX_WAVEFILE          1024    /* max # waveform files to play   */
+#define MAX_LEN               512     /* length of full directory name  */
+#define INTERNAL_QUEUE_SIZE   1024
+#define WAITING_INTERVAL_MSEC 50
+#define FILE_INDICATOR_LOGO   0
 
 /* Function prototypes */
 static void tankplayer_config( char * );
 static void tankplayer_lookup( void );
 static void tankplayer_status( unsigned char, short, char * );
 
+static thr_ret thread_read_files( void * );
 static int fetch_adbuf( void *, const int, unsigned char *, int * );
 static int fetch_trbuf( void *, const int, unsigned char *, int * );
 static double get_time( const void *, const unsigned char );
 static double set_time( void *, const unsigned char, const double );
+static double get_currenttime( void );
 
 static SHM_INFO Region;         /* Info structure for memory region  */
 pid_t           MyPID = 0;      /* to use in heartbeat               */
@@ -104,6 +107,15 @@ static volatile int   ReadFileThreadStatus = THREAD_OFF;
 static volatile _Bool Finish = 0;
 
 /* */
+#define WAITING_FOR_QUEUE(__MSEC) \
+		__extension__({ \
+			while ( getNumOfElementsInQueue(&MsgQueue) == INTERNAL_QUEUE_SIZE ) \
+				sleep_ew((__MSEC)); \
+		})
+
+/*
+ *
+ */
 int main( int argc, char *argv[] )
 {
 	uint8_t        msg[MAX_BUFSIZ];   /* waveform data buffer read from file   */
@@ -113,7 +125,6 @@ int main( int argc, char *argv[] )
 	double         current_time;      /* current system time                   */
 	double         pac_time = 0.0;    /* original time stamp on packet         */
 	double         offset_time = 0.0; /* Difference between pac_time and current_time */
-	double         wait;              /* Seconds to wait before sending pkt    */
 	time_t         itime;             /* integer version of double times       */
 	time_t         timeNow;           /* current system time                   */
 	time_t         timeLastBeat;      /* system time of last heartbeat sent    */
@@ -124,7 +135,6 @@ int main( int argc, char *argv[] )
 	char           lot[3]; /* logit arg1: "t" if ScreenMsg=0; "ot" otherwise  */
 	char           current_file[MAX_LEN];		/* a pointer to the currently named tank file */
 	int            res; 		/* processing result  -1 == failure */
-	int            ret;
 	ew_thread_t    tid;            /* Thread ID */
 
 /* */
@@ -185,7 +195,7 @@ int main( int argc, char *argv[] )
 /* Create a Mutex to control access to queue */
 	CreateSpecificMutex(&QueueMutex);
 /* Initialize the message queue */
-	initqueue(&MsgQueue, 1024, (unsigned long)MAX_BUFSIZ);
+	initqueue(&MsgQueue, INTERNAL_QUEUE_SIZE, (unsigned long)MAX_BUFSIZ);
 
 /* Force a heartbeat to be issued in first pass thru main loop */
 	timeLastBeat = time(&timeNow) - HeartBeatInt - 1;
@@ -267,7 +277,7 @@ int main( int argc, char *argv[] )
 		res = dequeue(&MsgQueue, (char *)msg, &size, &getlogo);
 		ReleaseSpecificMutex(&QueueMutex);
 		if ( res < 0 ) {
-			sleep_ew(100);
+			sleep_ew(WAITING_INTERVAL_MSEC);
 		}
 		else {
 		/* */
@@ -276,9 +286,9 @@ int main( int argc, char *argv[] )
 				itime = (time_t)pac_time;
 				logit(lot, "last header time-stamp: UTC %s", asctime(gmtime(&itime)));
 			/* */
-				if ( strlen(msg) ) {
+				if ( strlen((char *)msg) ) {
 					first = 1;
-					strcpy(current_file, msg);
+					strcpy(current_file, (char *)msg);
 					continue;
 				}
 				else {
@@ -288,7 +298,7 @@ int main( int argc, char *argv[] )
 			}
 		/* Sleep until it's time to send this message */
 			pac_time = get_time( msg, PlayType );
-			hrtime_ew( &current_time );
+			current_time = get_currenttime();
 		/* First trace... */
 			if ( first ) {
 				offset_time = ceil(current_time - pac_time);
@@ -324,10 +334,10 @@ int main( int argc, char *argv[] )
 					);
 				}
 				while ( pac_time > current_time ) {
-					sleep_ew(100);
-					hrtime_ew( &current_time );
-					if ( time(&timeNow) - timeLastBeat >= HeartBeatInt ) {
-						timeLastBeat = timeNow;
+					sleep_ew(WAITING_INTERVAL_MSEC);
+					current_time = get_currenttime();
+					if ( (time_t)current_time - timeLastBeat >= HeartBeatInt ) {
+						timeLastBeat = (time_t)current_time;
 						tankplayer_status(TypeHeartBeat, 0, "");
 					}
 				}
@@ -341,7 +351,7 @@ int main( int argc, char *argv[] )
 				ProgName, tcurr, dt, dtsys
 			);
 		*/ /* DEBUG */
-			if ( tport_putmsg(&Region, &putlogo, (long)size, msg) != PUT_OK )
+			if ( tport_putmsg(&Region, &putlogo, (long)size, (char *)msg) != PUT_OK )
 				logit("e", "%s: tport_putmsg error.\n", ProgName);
 			if ( Debug )
 				logit("t", "packet: <%s.%s.%s> %15.2lf\n", wfhead->sta, wfhead->chan, wfhead->net, get_time( msg, PlayType ));
@@ -677,8 +687,7 @@ static thr_ret thread_read_files( void *dummy )
 			/* Sending the file starting message to the main process */
 				logo.type = FILE_INDICATOR_LOGO;
 				msg[0] = '\0';
-				while ( getNumOfElementsInQueue(&MsgQueue) == 1024 )
-					sleep_ew(100);
+				WAITING_FOR_QUEUE(WAITING_INTERVAL_MSEC);
 				RequestSpecificMutex(&QueueMutex);
 				enqueue(&MsgQueue, (char *)msg, 1, logo);
 				ReleaseSpecificMutex(&QueueMutex);
@@ -718,7 +727,7 @@ static thr_ret thread_read_files( void *dummy )
 		 * We don't ever want to look at a file that's being written to.
 		 */
 			for ( i = 0; i < OpenTries && Finish; i++ ) {
-				if ( fd = open(fname, O_RDONLY, 0) > 0 )
+				if ( (fd = open(fname, O_RDONLY, 0)) > 0 )
 					break;
 				sleep_ew(OpenWait);
 			}
@@ -738,11 +747,10 @@ static thr_ret thread_read_files( void *dummy )
 
 	/* Sending the file starting message to the main process */
 		logo.type = FILE_INDICATOR_LOGO;
-		strcpy(msg, current_file);
-		while ( getNumOfElementsInQueue(&MsgQueue) == 1024 )
-			sleep_ew(100);
+		strcpy((char *)msg, current_file);
+		WAITING_FOR_QUEUE(WAITING_INTERVAL_MSEC);
 		RequestSpecificMutex(&QueueMutex);
-		enqueue(&MsgQueue, (char *)msg, strlen(msg) + 1, logo);
+		enqueue(&MsgQueue, (char *)msg, strlen((char *)msg) + 1, logo);
 		ReleaseSpecificMutex(&QueueMutex);
 
 		file_offset = 0;
@@ -752,14 +760,14 @@ static thr_ret thread_read_files( void *dummy )
 			logo.type = PlayType;
 		/* Read ADBuf waveform message from tank */
 			if ( PlayType == TypeADBuf ) {
-				if ( (ret = fetch_adbuf(msg, fd, &logo.mod, &correct_version)) < 0 ) {
+				if ( (ret = fetch_adbuf(msg, fd, &logo.mod, &correct_version)) <= 0 ) {
 					break;
 				}
 				file_offset += ret;
 			}
 		/* Read TraceBuf waveform message from file */
 			else if ( PlayType == TypeTraceBuf2 || PlayType == TypeTraceBuf ) {
-				if ( (ret = fetch_trbuf(msg, fd, &logo.mod, &correct_version)) < 0 ) {
+				if ( (ret = fetch_trbuf(msg, fd, &logo.mod, &correct_version)) <= 0 ) {
 					break;
 				}
 			/* */
@@ -774,6 +782,7 @@ static thr_ret thread_read_files( void *dummy )
 				file_offset += ret;
 			}
 		/* Write waveform message to transport region */
+			current_time = get_currenttime();
 			if ( ScreenMsg && (current_time - lastdot) > 1.0 ) {
 				lastdot = current_time;
 				fprintf(stdout, ".");
@@ -786,8 +795,7 @@ static thr_ret thread_read_files( void *dummy )
 			);
 		*/ /* DEBUG */
 			if ( correct_version || bBeSuperLenient ) {
-				while ( getNumOfElementsInQueue(&MsgQueue) == 1024 )
-					sleep_ew(100);
+				WAITING_FOR_QUEUE(WAITING_INTERVAL_MSEC);
 				RequestSpecificMutex(&QueueMutex);
 				enqueue(&MsgQueue, (char *)msg, ret, logo);
 				ReleaseSpecificMutex(&QueueMutex);
@@ -873,10 +881,11 @@ static int fetch_adbuf( void *buf, const int fd, unsigned char *module, int *cor
 	int16_t    nchan;
 	int16_t    nscan;
 	int        size = sizeof(WF_HEADER);
+	int        ret;
 
 /* Read the header */
-	if ( read(fd, _buf, size) < size )
-		return -1;
+	if ( (ret = read(fd, _buf, size)) < size )
+		return ret == 0 ? 0 : -1;
 /* */
 	_buf   += size;
 	nchan   = adh->nchan;
@@ -894,8 +903,8 @@ static int fetch_adbuf( void *buf, const int fd, unsigned char *module, int *cor
 		logit("e", "%s: msg[%zu] adtype overflows internal buffer[%d]\n", ProgName, size + sizeof(WF_HEADER), MAX_BUFSIZ);
 		return -2;
 	}
-	if ( read(fd, _buf, size) < size )
-		return -1;
+	if ( (ret = read(fd, _buf, size)) < size )
+		return ret == 0 ? 0 : -1;
 	size += sizeof(WF_HEADER);
 
 	return size;
@@ -911,13 +920,13 @@ static int fetch_trbuf( void *buf, const int fd, unsigned char *module, int *cor
 	int32_t        nsamp;
 	uint8_t        byte_order;
 	int32_t        byte_per_sample;
-	int16_t        nscan;
 	int            size = sizeof(TRACE2_HEADER);
+	int            ret;
 
 /* Read the header */
 	size = sizeof(TRACE2_HEADER);
-	if ( read(fd, _buf, size) < size )
-		return -1;
+	if ( (ret = read(fd, _buf, size)) < size )
+		return ret == 0 ? 0 : -1;
 
 	_buf           += size;
 	nsamp           = trh->nsamp;
@@ -948,9 +957,8 @@ static int fetch_trbuf( void *buf, const int fd, unsigned char *module, int *cor
 		logit("e", "%s: msg[%zu] tbuf2 overflows internal buffer[%d]\n", ProgName, size + sizeof(TRACE2_HEADER), MAX_TRACEBUF_SIZ);
 		return -2;
 	}
-
-	if ( read(fd, _buf, size) < size )
-		return -1;
+	if ( (ret = read(fd, _buf, size)) < size )
+		return ret == 0 ? 0 : -1;
 	size += sizeof(TRACE2_HEADER);
 
 	return size;
@@ -1043,13 +1051,13 @@ static double set_time( void *msg, const unsigned char msgtype, const double tim
 		starttime = time + (starttime - endtime);
 		endtime   = time;
 #ifdef _SPARC
-		if (byte_order == 'i' || byte_order == 'f') {
+		if ( trh->datatype[0] == 'i' || trh->datatype[0] == 'f' ) {
 			SwapDouble(&starttime);
 			SwapDouble(&endtime);
 		}
 #endif
 #ifdef _INTEL
-		if (byte_order == 's' || byte_order == 't') {
+		if ( trh->datatype[0] == 's' || trh->datatype[0] == 't' ) {
 			SwapDouble(&starttime);
 			SwapDouble(&endtime);
 		}
@@ -1059,4 +1067,25 @@ static double set_time( void *msg, const unsigned char msgtype, const double tim
 	}
 
 	return time;
+}
+
+/*
+ *
+ */
+static double get_currenttime( void )
+{
+	double result = 0.0;
+#ifdef _MACOSX
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	result = tv.tv_sec + tv.tv_usec * 1.0e-6;
+#else
+	struct timespec t;
+
+	if ( clock_gettime( CLOCK_REALTIME_COARSE, &t ) == 0 )
+		result = (double)t.tv_sec + (double)t.tv_nsec * 1.0e-9;
+#endif
+
+	return result;
 }
