@@ -133,8 +133,8 @@ int main( int argc, char *argv[] )
 	int            i;
 	char           lo[2];  /* logit arg1: ""  if ScreenMsg=0; "o"  otherwise  */
 	char           lot[3]; /* logit arg1: "t" if ScreenMsg=0; "ot" otherwise  */
-	char           current_file[MAX_LEN];		/* a pointer to the currently named tank file */
-	int            res; 		/* processing result  -1 == failure */
+	char           current_file[MAX_LEN] = { 0 }; /* a pointer to the currently named tank file */
+	int            res;             /* processing result  -1 == failure */
 	ew_thread_t    tid;            /* Thread ID */
 
 /* */
@@ -282,10 +282,12 @@ int main( int argc, char *argv[] )
 		else {
 		/* */
 			if ( getlogo.type == FILE_INDICATOR_LOGO ) {
-			/* */
-				itime = (time_t)pac_time;
-				logit(lot, "last header time-stamp: UTC %s", asctime(gmtime(&itime)));
-			/* */
+			/* For the previous last packet */
+				if ( pac_time > 0.0 ) {
+					itime = (time_t)pac_time;
+					logit(lot, "last header time-stamp: UTC %s", asctime(gmtime(&itime)));
+				}
+			/* Check it is the starting indicator or the ending indicator? */
 				if ( strlen((char *)msg) ) {
 					first = 1;
 					strcpy(current_file, (char *)msg);
